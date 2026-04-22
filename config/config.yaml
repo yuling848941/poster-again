@@ -1,0 +1,44 @@
+advanced:
+  enable_debug_mode: false
+  log_file_count: 5
+  log_level: INFO
+  max_log_size: 10MB
+app:
+  author: AI Assistant
+  description: 基于 Excel 数据批量生成 PPT 文件的工具
+  name: PPT 批量生成工具
+  version: 1.0.0
+image_generation:
+  enabled: false
+  format: PNG
+  quality: 1.0
+matching:
+  auto_match: true
+  case_sensitive: false
+  fuzzy_match: true
+  save_matching_rules: true
+output:
+  create_subfolders: false
+  file_name_pattern: output_{index}.pptx
+  include_date_in_name: false
+  overwrite_existing: false
+paths:
+  default_output_dir: ./output
+  last_config_load_dir: ''
+  last_config_save_dir: ''
+  last_data_dir: ''
+  last_output_dir: ''
+  last_template_dir: ''
+processing:
+  auto_save: true
+  backup_files: true
+  max_undo_steps: 10
+  use_com_interface: false
+ui:
+  language: zh_CN
+  remember_window_state: true
+  show_tips: true
+  theme: light
+  window_size:
+    height: 700
+    width: 1000

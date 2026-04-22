@@ -1,0 +1,56 @@
+advanced:
+  enable_debug_mode: false
+  log_file_count: 5
+  log_level: INFO
+  max_log_size: 10MB
+app:
+  author: AI Assistant
+  description: 基于Excel数据批量生成PPT文件的工具
+  name: PPT批量生成工具
+  version: 1.0.0
+image_generation:
+  enabled: false
+  format: JPG
+  quality: 1.0
+matching:
+  auto_match: true
+  case_sensitive: false
+  fuzzy_match: true
+  save_matching_rules: true
+message_template: "┏━\U0001F947新单捷报\U0001F947━┓\n      ㊗㊗ 热烈祝贺 ㊗㊗\n  {{支公司 DESC}}中支\
+  \  {{营销员或推广员 姓名}}\n    承保       新单\n    保费     {{标保}}元\n┗━━  \U0001F3C6   \U0001F3C6\
+  \  \U0001F3C6   ━━┛\n\U0001F40E意马当先[太阳][太阳]势不可挡\U0001F680\n\n\n\n"
+office_cache:
+  available_suites:
+  - MICROSOFT
+  - WPS
+  current_suite: MICROSOFT
+  timestamp: '2026-03-24T10:10:23.242174'
+  valid_until: '2026-03-25T10:10:23.242185'
+office_suite:
+  preferred: microsoft
+output:
+  create_subfolders: false
+  file_name_pattern: output_{index}.pptx
+  include_date_in_name: false
+  overwrite_existing: false
+paths:
+  default_output_dir: ./output
+  last_config_load_dir: ''
+  last_config_save_dir: ''
+  last_data_dir: E:/poster code/poster-again/KA递交模板.xlsx
+  last_output_dir: E:/poster code/poster-again/output
+  last_template_dir: E:/poster code/poster-again/10月递交贺报(3).pptx
+processing:
+  auto_save: true
+  backup_files: true
+  max_undo_steps: 10
+  use_com_interface: false
+ui:
+  language: zh_CN
+  remember_window_state: true
+  show_tips: true
+  theme: light
+  window_size:
+    height: 700
+    width: 1000

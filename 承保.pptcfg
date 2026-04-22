@@ -1,0 +1,24 @@
+{
+  "version": "1.0.0",
+  "created_at": "2025-11-12T14:05:38.942722",
+  "gui_settings": {
+    "text_additions": {
+      "ph_险种": {
+        "prefix": "",
+        "suffix": "1件"
+      },
+      "ph_支公司": {
+        "prefix": "",
+        "suffix": "中支"
+      },
+      "ph_家族": {
+        "prefix": "",
+        "suffix": "家族"
+      }
+    },
+    "dundian_mappings": {},
+    "chengbao_mappings": {
+      "ph_test": "承保趸期数据"
+    }
+  }
+}

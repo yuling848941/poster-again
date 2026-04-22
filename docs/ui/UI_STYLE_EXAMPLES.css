@@ -1,0 +1,192 @@
+/* UI现代化前后对比示例 */
+
+/* ========== 之前的旧样式 ========== */
+.old-button {
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-weight: bold;
+}
+
+.old-button:hover {
+    background-color: #45a049;
+}
+
+.old-input {
+    border: 1px solid #ddd;
+    padding: 5px;
+    border-radius: 3px;
+}
+
+.old-panel {
+    border: 1px solid #ccc;
+    background-color: white;
+}
+
+/* ========== 新的现代化样式 ========== */
+
+/* 主操作按钮 - 紫色渐变 */
+.modern-primary-btn {
+    background: linear-gradient(to bottom, #8B5CF6, #7C3AED);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 12px;
+    font-weight: 600;
+    font-size: 14px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+    transition: all 300ms ease-out;
+}
+
+.modern-primary-btn:hover {
+    background: linear-gradient(to bottom, #7C3AED, #6D28D9);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
+    transform: translateY(-1px);
+}
+
+.modern-primary-btn:active {
+    background: linear-gradient(to bottom, #6D28D9, #5B21B6);
+    transform: scale(0.98);
+}
+
+/* 成功按钮 - 绿色渐变 */
+.modern-success-btn {
+    background: linear-gradient(to bottom, #10B981, #059669);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 12px;
+    font-weight: 600;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* 次要按钮 - 蓝色渐变 */
+.modern-secondary-btn {
+    background: linear-gradient(to bottom, #3B82F6, #2563EB);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 12px;
+    font-weight: 600;
+}
+
+/* 输入框 */
+.modern-input {
+    border: 2px solid #E5E7EB;
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 14px;
+    transition: all 200ms ease;
+}
+
+.modern-input:focus {
+    border-color: #2563EB;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.modern-input:hover {
+    border-color: #1D4ED8;
+}
+
+/* 面板容器 */
+.modern-panel {
+    background-color: #FAFAFA;
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.modern-panel-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #1F2937;
+    margin-bottom: 8px;
+}
+
+/* 表格 */
+.modern-table {
+    background-color: white;
+    border: 1px solid #E5E7EB;
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+.modern-table tr:nth-child(even) {
+    background-color: #F9FAFB;
+}
+
+.modern-table tr:hover {
+    background-color: #EFF6FF;
+}
+
+.modern-table th {
+    background-color: #F9FAFB;
+    font-weight: 600;
+    padding: 8px;
+    border-bottom: 1px solid #E5E7EB;
+}
+
+/* 进度条 */
+.modern-progress {
+    background-color: #E5E7EB;
+    border-radius: 4px;
+    height: 8px;
+}
+
+.modern-progress-fill {
+    background-color: #2563EB;
+    border-radius: 4px;
+    transition: width 300ms ease;
+}
+
+/* 标题 */
+.modern-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #2563EB;
+    text-align: center;
+}
+
+/* ========== 配色系统 ========== */
+:root {
+    /* 主色调 */
+    --color-primary: #2563EB;
+    --color-primary-hover: #1D4ED8;
+    --color-primary-pressed: #1E40AF;
+
+    /* 成功色 */
+    --color-success: #10B981;
+    --color-success-hover: #059669;
+
+    /* 警告色 */
+    --color-warning: #F59E0B;
+
+    /* 错误色 */
+    --color-error: #EF4444;
+
+    /* 中性色 */
+    --color-gray-50: #F9FAFB;
+    --color-gray-100: #F3F4F6;
+    --color-gray-200: #E5E7EB;
+    --color-gray-400: #9CA3AF;
+    --color-gray-600: #6B7280;
+    --color-gray-800: #1F2937;
+
+    /* 阴影 */
+    --shadow-light: 0 1px 3px rgba(0, 0, 0, 0.1);
+    --shadow-medium: 0 2px 4px rgba(0, 0, 0, 0.15);
+    --shadow-strong: 0 4px 8px rgba(0, 0, 0, 0.25);
+
+    /* 圆角 */
+    --radius-small: 4px;
+    --radius-medium: 6px;
+    --radius-large: 8px;
+
+    /* 间距 */
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 12px;
+    --space-lg: 16px;
+}

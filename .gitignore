@@ -1,0 +1,87 @@
+# ====================
+# Python
+# ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.spec
+
+# ====================
+# Virtual Environment
+# ====================
+.venv/
+venv/
+env/
+
+# ====================
+# IDE / Editor
+# ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.pytest_cache/
+
+# ====================
+# Claude / AI Tools
+# ====================
+.claude/
+.trae/
+
+# ====================
+# Build Artifacts
+# ====================
+dist/
+build/
+*.exe
+
+# ====================
+# Generated / Output Files
+# ====================
+output/
+*.pptx
+*.xlsx
+*.png
+*.jpg
+*.jpeg
+*.heapsnapshot
+test_export*.pptx
+test_replace_result.pptx
+test_export_20260413/
+
+# ====================
+# Backup / Archive Files
+# ====================
+*.7z
+*.tar.gz
+*.bak
+*.backup
+
+# ====================
+# Generated Config (contains user-specific paths)
+# ====================
+PosterAgain_config.yaml
+
+# ====================
+# Spec Workflow
+# ====================
+.spec-workflow/
+
+# ====================
+# OS Files
+# ====================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ====================
+# Debug / Temporary Files
+# ====================
+*.tmp
+*.log
