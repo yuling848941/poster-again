@@ -2,14 +2,23 @@
 
 ## Quick Commands
 
+**重要：所有命令都应通过 `.venv` 虚拟环境运行**，避免系统 Python 里无关库（如 PyTorch）干扰。两种方式：
+- 激活后运行：`.venv\Scripts\activate`（之后可直接用 `python`）
+- 或显式调用：`.venv\Scripts\python.exe ...`
+
 ```bash
-python main.py                          # Run GUI app
-python -m venv .venv && .venv\Scripts\activate  # Setup env (Windows)
-pip install -r config/requirements.txt  # Install deps
-python build_exe.py                     # Build exe via PyInstaller
-打包.bat                                 # Build exe (Windows batch wrapper)
-python tests\unit\test_xxx.py           # Run a single test (standalone script)
+# 首次设置虚拟环境（已存在则跳过）
+python -m venv .venv
+.venv\Scripts/python.exe -m pip install -r requirements.txt
+
+# 运行程序 / 测试 / 打包（统一用 .venv）
+.venv\Scripts\python.exe main.py                       # Run GUI app
+.venv\Scripts\python.exe tests\unit\test_xxx.py        # Run a single test (standalone script)
+.venv\Scripts\python.exe -m PyInstaller PosterAgain.spec --noconfirm  # Build exe via spec
+打包.bat                                                # Build exe (Windows batch wrapper)
 ```
+
+⚠️ **打包必须用 `.venv`**：系统 Python 装了 PyTorch 等大量无关库，用系统 Python 打包会让 PyInstaller 误卷入 7GB+ 垃圾库，导致 exe 体积爆炸或打包失败。
 
 No pytest config, no `conftest.py`, no `pyproject.toml`. Tests are standalone Python scripts — run them directly with `python`.
 
@@ -17,7 +26,11 @@ No pytest config, no `conftest.py`, no `pyproject.toml`. Tests are standalone Py
 
 **What it does:** Desktop GUI app (PySide6) that reads Excel/CSV/JSON data and batch-generates personalized .pptx files from a template.
 
-**v2.0.0 uses pure Python** — `python-pptx` only. No Microsoft Office or WPS COM dependency. The `use_com_interface` config flag is `false` and old COM processor code is dead.
+**Current version: 1.0.0.** PPT generation uses pure Python (`python-pptx` only) — **no Microsoft Office or WPS needed for the core workflow**. The `use_com_interface` config flag is `false` and the old COM-based PPT processor has been removed.
+
+**Office dependency boundary (important):**
+- ✅ **PPT batch generation** (default): pure `python-pptx`, no Office required
+- ⚠️ **Image export** (optional feature, `export_to_images`): still requires Microsoft Office or WPS Office via the COM interface (`src/core/processors/com_image_exporter.py`). When Office is not installed, image export raises `RuntimeError`; all other features work normally.
 
 ### Module boundaries
 
@@ -84,6 +97,7 @@ Before any task: run `openspec list` and `openspec list --specs` to check for ex
 
 - `main.py` creates module-level singletons (`memory_manager`, `config_manager`) at import time — importing `main` has side effects
 - `ConfigManager()` called without args defaults to `config/config.yaml`
-- `config/config.yaml` stores **absolute paths** from the last user session — don't commit path changes
+- `config/config.yaml` (the tracked template) holds defaults. A runtime snapshot is written to the **repo-root `config.yaml`** (or `PosterAgain_config.yaml`) containing absolute paths from the last user session — these root-level snapshots are gitignored and must not be committed
 - The `office_manager` parameter on `PPTWorkerThread` is deprecated (always set to `None`) — kept for backward compat
-- `logging.basicConfig` is NOT called globally; each module uses `logging.getLogger(__name__)`. If you need to configure logging, do it in `main()`
+- **Logging:** `main.setup_logging()` calls `logging.basicConfig` once at startup (reads `advanced.log_level` from `config/config.yaml`, default INFO, outputs to console). Every other module should use `logging.getLogger(__name__)` and never call `basicConfig` itself, to avoid clobbering the global config
+- `ppt_worker_thread.py` no longer swallows exceptions silently — chengbao-term processing errors are now logged at WARNING level instead of `except: pass`

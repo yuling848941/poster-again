@@ -1,0 +1,23 @@
+# PosterAgain 运行依赖
+# 安装：pip install -r requirements.txt
+
+# GUI 框架
+PySide6>=6.5
+
+# PPT 处理（纯 Python，无需 Office）
+python-pptx>=0.6.21
+
+# 数据处理
+pandas>=2.0
+openpyxl>=3.1
+numpy>=1.24
+
+# 配置文件
+PyYAML>=6.0
+
+# 内存监控
+psutil>=5.9
+
+# 图片导出功能（可选）：仅 Windows 上需要，用于通过 COM 接口调用 Office/WPS 导出 PPT 为图片
+# PPT 生成本身不需要此依赖；未安装时图片导出功能不可用，其他功能正常
+pywin32>=305; sys_platform == "win32"

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 PPT 批量生成工具 - 基于 PySide6 和 python-pptx 的桌面应用，根据 Excel 数据批量生成 PowerPoint 演示文稿。
 
-**v2.0.0 重要更新**: 使用纯 Python 的 python-pptx 库，无需 Microsoft Office 或 WPS。
+**当前版本 1.0.0**：PPT 生成使用纯 Python 的 python-pptx 库，**无需 Microsoft Office 或 WPS**（核心工作流）。仅"图片导出"这一可选功能仍需 Office 套件（通过 COM 接口），未安装时该功能不可用，其他功能正常。
 
 ## 技术栈
 
@@ -17,25 +17,25 @@ PPT 批量生成工具 - 基于 PySide6 和 python-pptx 的桌面应用，根据
 
 ## 常用命令
 
+**重要：所有命令都应通过 `.venv` 虚拟环境运行**，避免系统 Python 里无关库（如 PyTorch 7GB）干扰打包。两种方式：激活后用 `python`，或显式调用 `.venv\Scripts\python.exe`。
+
 ```bash
+# 首次设置虚拟环境（已存在则跳过）
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+
 # 启动应用程序
-python main.py
-
-# 安装虚拟环境
-python -m venv .venv && .venv\Scripts\activate  # Windows
-
-# 安装依赖 (无 requirements.txt，手动安装)
-pip install PySide6 python-pptx pandas openpyxl PyYAML psutil
+.venv\Scripts\python.exe main.py
 
 # 运行测试 (单个测试文件，无 pytest 框架)
-python tests/unit/test_pptx_processor.py
-python tests/unit/test_chengbao_term_data.py
-python tests/unit/test_complete_workflow.py
+.venv\Scripts\python.exe tests/unit/test_xxx.py
 
-# 打包为 exe
+# 打包为 exe（脚本内部会自动用 .venv）
 python build_exe.py
 打包.bat                                 # Windows 批处理方式
 ```
+
+⚠️ **打包必须用 `.venv`**：系统 Python 装了 PyTorch 等大量无关库，用系统 Python 打包会让 PyInstaller 误卷入 7GB+ 垃圾库，导致 exe 体积爆炸或打包失败。`build_exe.py` 已默认使用 `.venv`。
 
 **测试说明**: `tests/unit/` 下约 49 个测试文件都是独立脚本，没有 pytest 配置或 conftest.py。没有"运行全部测试"的目标 — 始终运行与更改相关的具体测试文件。
 
@@ -44,45 +44,46 @@ python build_exe.py
 ### 模块结构
 
 ```
-src/
-├── main.py                      # 应用入口
-├── ppt_generator.py             # PPT 生成器 (协调层)
-├── data_reader.py               # 数据读取 (支持 Excel/CSV/JSON)
-├── exact_matcher.py             # 占位符匹配算法
-├── excel_detector.py            # Excel 文件检测
-├── gui/
-│   ├── main_window.py           # 主窗口 (~1500 行，所有 UI 逻辑)
-│   ├── ppt_worker_thread.py     # 后台工作线程 (QThread)
-│   ├── settings_manager.py      # 设置管理
-│   ├── path_manager.py          # 路径记忆
-│   ├── match_table_manager.py   # 匹配表格管理
-│   ├── config_dialog.py         # 配置对话框
-│   ├── simple_config_dialog.py  # 简化配置对话框
-│   ├── chengbao_term_input_dialog.py  # 承保趸期输入对话框
-│   └── widgets/
-│       └── add_text_dialog.py   # 文本增加对话框
-├── core/
-│   ├── processors/
-│   │   └── pptx_processor.py    # PPTX 模板处理器 (纯 Python)
-│   ├── interfaces/
-│   │   └── template_processor.py # 模板处理器接口
-│   ├── detectors/
-│   │   └── office_suite_detector.py  # Office 套件检测
-│   ├── factory/
-│   │   └── office_suite_factory.py # 工厂类
-│   └── utils/
-│       └── font_checker.py      # 字体检查工具
-├── memory_management/
-│   ├── memory_data_manager.py   # 内存数据管理
-│   ├── memory_optimizer.py      # 内存优化器
-│   └── data_formatter.py        # 数据格式化 (千位分隔符/期趸数据)
-├── config/
-│   ├── __init__.py              # ConfigManager (多重继承 Mixin 模式)
-│   ├── path_config.py           # 路径配置 Mixin
-│   ├── image_config.py          # 图片生成配置 Mixin
-│   ├── placeholder_config.py    # 占位符配置 Mixin
-│   └── gui_config.py            # GUI 配置 Mixin
-└── term_data_generator.py       # 期趸数据生成器
+项目根/
+├── main.py                      # 应用入口 (创建 QApplication + MainWindow)
+├── requirements.txt             # 依赖清单
+└── src/
+    ├── ppt_generator.py         # PPT 生成器 (协调层)
+    ├── data_reader.py           # 数据读取 (支持 Excel/CSV/JSON)
+    ├── exact_matcher.py         # 占位符匹配算法
+    ├── gui/
+    │   ├── main_window.py       # 主窗口 (~1500 行，所有 UI 逻辑)
+    │   ├── ppt_worker_thread.py # 后台工作线程 (QThread)
+    │   ├── settings_manager.py  # 设置管理
+    │   ├── path_manager.py      # 路径记忆
+    │   ├── match_table_manager.py   # 匹配表格管理
+    │   ├── config_dialog.py     # 配置对话框
+    │   ├── simple_config_dialog.py  # 简化配置对话框
+    │   ├── chengbao_term_input_dialog.py  # 承保趸期输入对话框
+    │   └── widgets/
+    │       └── add_text_dialog.py   # 文本增加对话框
+    ├── core/
+    │   ├── processors/
+    │   │   ├── pptx_processor.py    # PPTX 模板处理器 (纯 Python)
+    │   │   └── com_image_exporter.py # COM 图片导出 (可选，需 Office)
+    │   ├── interfaces/
+    │   │   └── template_processor.py # 模板处理器接口
+    │   ├── detectors/
+    │   │   └── office_suite_detector.py  # Office 套件检测
+    │   ├── factory/
+    │   │   └── office_suite_factory.py # 工厂类
+    │   └── utils/
+    │       └── font_checker.py      # 字体检查工具
+    ├── memory_management/
+    │   ├── memory_data_manager.py   # 内存数据管理
+    │   ├── memory_optimizer.py      # 内存优化器
+    │   └── data_formatter.py        # 数据格式化 (千位分隔符/期趸数据)
+    └── config/
+        ├── __init__.py          # ConfigManager (多重继承 Mixin 模式)
+        ├── path_config.py       # 路径配置 Mixin
+        ├── image_config.py      # 图片生成配置 Mixin
+        ├── placeholder_config.py # 占位符配置 Mixin
+        └── gui_config.py        # GUI 配置 Mixin
 ```
 
 ### 数据流

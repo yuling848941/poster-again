@@ -67,6 +67,14 @@ test_export_20260413/
 # Generated Config (contains user-specific paths)
 # ====================
 PosterAgain_config.yaml
+# 根目录 config.yaml 是运行时生成的用户快照（含绝对路径），不应提交；
+# 模板文件 config/config.yaml 是被跟踪的，不受此规则影响
+/config.yaml
+
+# 业务配置预设（用户私有，不应提交）
+*.pptcfg
+# 打包成功报告是生成物，不应提交
+打包成功报告.md
 
 # ====================
 # Spec Workflow
@@ -85,3 +93,8 @@ desktop.ini
 # ====================
 *.tmp
 *.log
+
+# ====================
+# ZCode tooling
+# ====================
+.zcode/
