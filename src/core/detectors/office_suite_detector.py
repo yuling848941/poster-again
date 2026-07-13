@@ -258,17 +258,7 @@ class OfficeSuiteDetector:
             import win32com.client
 
             if office_type == "microsoft":
-                # 尝试创建 PowerPoint 实例
-                try:
-                    powerpoint = win32com.client.Dispatch("PowerPoint.Application")
-                    # 检查是否成功创建
-                    if powerpoint:
-                        powerpoint.Quit()
-                        return True
-                except Exception:
-                    pass
-
-                # 尝试获取活动实例
+                # 先探测用户已有的 PowerPoint 实例（不启动新进程，零副作用）
                 try:
                     powerpoint = win32com.client.GetActiveObject("PowerPoint.Application")
                     if powerpoint:
@@ -276,21 +266,30 @@ class OfficeSuiteDetector:
                 except Exception:
                     pass
 
+                # 没有现成实例，才启动临时实例探测（此情况下我们是 owner，Quit 安全）
+                try:
+                    powerpoint = win32com.client.Dispatch("PowerPoint.Application")
+                    if powerpoint:
+                        powerpoint.Quit()
+                        return True
+                except Exception:
+                    pass
+
             elif office_type == "wps":
-                # 尝试创建 WPS 实例
+                # 先探测用户已有的 WPS 实例（不启动新进程，零副作用）
                 wps_progids = ["Kwpp.Application", "WPP.Application"]
                 for progid in wps_progids:
                     try:
-                        wps = win32com.client.Dispatch(progid)
+                        wps = win32com.client.GetActiveObject(progid)
                         if wps:
-                            wps.Quit()
                             return True
                     except Exception:
                         pass
 
                     try:
-                        wps = win32com.client.GetActiveObject(progid)
+                        wps = win32com.client.Dispatch(progid)
                         if wps:
+                            wps.Quit()
                             return True
                     except Exception:
                         pass
@@ -312,6 +311,22 @@ class OfficeSuiteDetector:
             import win32com.client
 
             # 优先尝试 Microsoft Office
+            # 先探测用户已有的 PowerPoint 实例（零副作用，不启动新进程）
+            try:
+                powerpoint = win32com.client.GetActiveObject("PowerPoint.Application")
+                version = powerpoint.Version
+                return {
+                    'type': 'microsoft',
+                    'name': 'Microsoft Office PowerPoint (活动实例)',
+                    'path': 'COM 接口',
+                    'exe_path': 'POWERPNT.EXE',
+                    'version': version or '未知版本',
+                    'progid': 'PowerPoint.Application'
+                }
+            except Exception:
+                pass
+
+            # 没有现成实例，才启动临时实例探测（此情况下 Quit 安全）
             try:
                 powerpoint = win32com.client.Dispatch("PowerPoint.Application")
                 version = powerpoint.Version
@@ -327,30 +342,15 @@ class OfficeSuiteDetector:
             except Exception:
                 pass
 
-            # 尝试获取活动 PowerPoint 实例
-            try:
-                powerpoint = win32com.client.GetActiveObject("PowerPoint.Application")
-                version = powerpoint.Version
-                return {
-                    'type': 'microsoft',
-                    'name': 'Microsoft Office PowerPoint (活动实例)',
-                    'path': 'COM 接口',
-                    'exe_path': 'POWERPNT.EXE',
-                    'version': version or '未知版本',
-                    'progid': 'PowerPoint.Application'
-                }
-            except Exception:
-                pass
-
             # 尝试 WPS Office
+            # 先探测用户已有的 WPS 实例（零副作用）
             wps_progids = ["Kwpp.Application", "WPP.Application"]
             for progid in wps_progids:
                 try:
-                    wps = win32com.client.Dispatch(progid)
-                    wps.Quit()
+                    wps = win32com.client.GetActiveObject(progid)
                     return {
                         'type': 'wps',
-                        'name': 'WPS Office (COM 检测)',
+                        'name': 'WPS Office (活动实例)',
                         'path': 'COM 接口',
                         'exe_path': 'WPS.exe',
                         'version': '未知版本',
@@ -360,10 +360,11 @@ class OfficeSuiteDetector:
                     pass
 
                 try:
-                    wps = win32com.client.GetActiveObject(progid)
+                    wps = win32com.client.Dispatch(progid)
+                    wps.Quit()
                     return {
                         'type': 'wps',
-                        'name': 'WPS Office (活动实例)',
+                        'name': 'WPS Office (COM 检测)',
                         'path': 'COM 接口',
                         'exe_path': 'WPS.exe',
                         'version': '未知版本',

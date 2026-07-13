@@ -12,12 +12,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 # 图片质量映射表 (唯一数据源)
+# 3 档：原始(1.0x) / 增强(2.0x) / 高质量(3.0x)
 QUALITY_VALUE_TO_TEXT = {
-    1.0: "原始大小",
-    1.5: "1.5倍",
-    2.0: "2倍",
-    3.0: "3倍",
-    4.0: "4倍"
+    1.0: "原始",
+    2.0: "增强",
+    3.0: "高质量",
 }
 
 QUALITY_TEXT_TO_VALUE = {v: k for k, v in QUALITY_VALUE_TO_TEXT.items()}

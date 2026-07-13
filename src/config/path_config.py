@@ -4,10 +4,30 @@
 """
 
 import os
+import sys
 import logging
 from typing import Dict
 
 logger = logging.getLogger(__name__)
+
+
+def _get_program_dir() -> str:
+    """
+    获取程序所在目录。
+
+    兼容两种运行场景：
+      - 开发模式：返回项目根目录（源码所在目录）
+      - 打包模式（PyInstaller frozen）：返回 exe 所在目录
+        （注意：不能用 sys._MEIPASS，那是临时解压目录，会随退出消失）
+
+    Returns:
+        str: 程序所在目录的绝对路径
+    """
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后：exe 所在目录
+        return os.path.dirname(os.path.abspath(sys.executable))
+    # 开发模式：项目根目录（src/config/ 的上两级）
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class PathConfigMixin:
@@ -82,9 +102,9 @@ class PathConfigMixin:
 
             path = path_map.get(file_type, '')
 
-            # 如果路径为空或无效，返回用户主目录
+            # 如果路径为空或无效，返回程序所在目录（而非用户主目录）
             if not path or not self.validate_path(path):
-                return os.path.expanduser('~')
+                return _get_program_dir()
 
             # 如果是文件路径，返回其所在目录
             if os.path.isfile(path):
@@ -94,7 +114,7 @@ class PathConfigMixin:
 
         except Exception as e:
             logger.warning(f"获取文件类型起始目录失败：{str(e)}")
-            return os.path.expanduser('~')
+            return _get_program_dir()
 
     def validate_path(self, path: str) -> bool:
         """

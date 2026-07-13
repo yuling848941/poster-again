@@ -337,8 +337,8 @@ class MainWindow(QMainWindow):
         image_quality_label.setStyleSheet("font-weight: bold;")
         image_quality_label.setFont(Fonts.label_font())
         self.image_quality_combo = QComboBox()
-        self.image_quality_combo.addItems(["原始大小", "1.5 倍", "2 倍", "3 倍", "4 倍"])
-        self.image_quality_combo.setCurrentText("原始大小")
+        self.image_quality_combo.addItems(["原始", "增强", "高质量"])
+        self.image_quality_combo.setCurrentText("原始")
         self.image_quality_combo.setStyleSheet(ComboBoxStyles.combo_box_style())
         self.image_quality_combo.setFont(Fonts.body_font())
         self.image_quality_combo.setMinimumHeight(Dimensions.HEIGHT_INPUT)
@@ -551,6 +551,11 @@ class MainWindow(QMainWindow):
         self.match_table.setAlternatingRowColors(True)
         self.match_table.setStyleSheet(TableStyles.table_style())
         self.match_table.setFont(Fonts.body_font())
+
+        # 启用右键自定义菜单（"增加文本"等功能的入口）
+        # 必须设置 ContextMenu 策略并连接信号，否则 show_custom_menu 永远不会被触发
+        self.match_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.match_table.customContextMenuRequested.connect(self._on_match_table_context_menu)
 
         # 初始化匹配表格管理器 (从 main_window 拆分)
         self.match_table_manager = MatchTableManager(self.match_table, self.exact_matcher)
@@ -775,12 +780,15 @@ class MainWindow(QMainWindow):
         # 检查是否生成图片
         generate_images = self.direct_image_checkbox.isChecked()
         image_format = "PNG"  # 默认格式
-        image_quality = "原始大小"  # 默认质量
+        image_quality = 1.0  # 默认缩放倍数
 
         if generate_images:
             image_format = self.image_format_combo.currentText()
-            image_quality = self.image_quality_combo.currentText()
-            logger.info(f"将生成{image_format}格式的图片文件，质量：{image_quality}")
+            # UI 文本转 float 缩放倍数，贯穿到 COM 导出
+            image_quality = self.settings_manager.quality_text_to_value(
+                self.image_quality_combo.currentText()
+            )
+            logger.info(f"将生成{image_format}格式的图片文件，缩放倍数：{image_quality}")
 
             # 预检 Office 可用性
             if not self.check_office_availability(show_result=False):
@@ -886,6 +894,23 @@ class MainWindow(QMainWindow):
         # 此方法已停用，但保留以防将来需要
         pass
         
+    def _on_match_table_context_menu(self, pos):
+        """
+        匹配表格右键菜单信号适配器
+
+        customContextMenuRequested 信号传递的是相对表格的 QPoint，
+        需要转换成行号再交给 show_custom_menu 处理。
+        如果右键没有命中具体行，则不做任何操作。
+        """
+        item = self.match_table.itemAt(pos)
+        if item is None:
+            return
+        row = item.row()
+        if row < 0:
+            return
+        # button 参数在 show_custom_menu 内部实际未被使用，传 0 占位
+        self.show_custom_menu(row, 0)
+
     def show_custom_menu(self, row, button):
         """显示自定义菜单"""
         menu = QMenu(self)

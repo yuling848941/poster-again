@@ -323,19 +323,19 @@ class PPTGenerator:
             logger.error(f"保存贺语文件失败 {output_path}: {str(e)}")
             return False
 
-    def batch_generate(self, output_dir: str, progress_callback=None, 
+    def batch_generate(self, output_dir: str, progress_callback=None,
                       generate_images: bool = False, image_format: str = "PNG",
-                      image_quality: str = "原始大小") -> int:
+                      image_quality: float = 1.0) -> int:
         """
         批量生成PPT或图片（GUI调用接口）
-        
+
         Args:
             output_dir: 输出目录
             progress_callback: 进度回调函数，接收(current, total, message)参数
             generate_images: 是否生成图片
             image_format: 图片格式
-            image_quality: 图片质量
-            
+            image_quality: 图片缩放倍数 (1.0=原始, 2.0=增强, 3.0=高质量)
+
         Returns:
             int: 成功生成的文件数量
         """
@@ -377,8 +377,23 @@ class PPTGenerator:
                             data[placeholder] = ""
                 
                 # 生成文件名
+                # 优先使用含"姓名"的列内容作为文件名标识，找不到则用 output 兜底
                 try:
-                    filename = f"{index+1}_{row.get('姓名', 'output')}"
+                    name_value = 'output'
+                    # 优先精确匹配"姓名"列；否则取第一个包含"姓名"二字的列
+                    if '姓名' in row:
+                        name_value = row['姓名']
+                    else:
+                        for col in row.index:
+                            if isinstance(col, str) and '姓名' in col:
+                                name_value = row[col]
+                                break
+                    # 处理 NaN/空值
+                    if name_value is None or (isinstance(name_value, float) and pd.isna(name_value)) or str(name_value).strip() == '':
+                        name_value = 'output'
+                    else:
+                        name_value = str(name_value).strip()
+                    filename = f"{index+1}_{name_value}"
                 except (KeyError, AttributeError, TypeError) as e:
                     logger.debug(f"获取行数据失败：{str(e)}，使用默认文件名")
                     filename = f"{index+1}_output"
@@ -401,6 +416,8 @@ class PPTGenerator:
 
                 if generate_images:
                     # 生成图片
+                    # 注意：temp_pptx 必须在 try 外初始化为 None，
+                    # 这样 finally 块才能在 replace_placeholders 等步骤抛异常时也正确清理
                     temp_pptx = None
                     try:
                         # 使用PPTXProcessor的导出图片功能
@@ -412,22 +429,13 @@ class PPTGenerator:
                         # 导出为图片到输出目录（不使用子文件夹）
                         os.makedirs(output_dir, exist_ok=True)
 
-                        # 将质量文本转换为数值
-                        quality_map = {
-                            "原始大小": 1.0,
-                            "1.5倍": 1.5,
-                            "2倍": 2.0,
-                            "3倍": 3.0,
-                            "4倍": 4.0
-                        }
-                        quality_float = quality_map.get(image_quality, 1.0)
-
+                        # image_quality 已经是 float 缩放倍数，直接透传
                         # 获取基础文件名（不含扩展名）
                         base_filename = os.path.splitext(filename)[0]
                         generated_files = self.template_processor.export_to_images(
                             output_dir=output_dir,
                             format=image_format,
-                            quality=quality_float,
+                            quality=image_quality,
                             base_filename=base_filename
                         )
 

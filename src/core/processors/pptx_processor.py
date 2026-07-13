@@ -551,15 +551,8 @@ class PPTXProcessor(ITemplateProcessor):
             time.sleep(0.1)
 
             try:
-                # 转换 quality 参数
-                quality_str = "原始大小"
-                if quality >= 3.0:
-                    quality_str = "3倍"
-                elif quality >= 2.0:
-                    quality_str = "2倍"
-
-                # 使用 Office 导出
-                generated_files = exporter.export_to_images(temp_path, output_dir, format, quality_str)
+                # 直接透传缩放倍数（float）给 COM 导出器
+                generated_files = exporter.export_to_images(temp_path, output_dir, format, quality)
 
                 # 如果指定了基础文件名，重命名生成的图片
                 if base_filename and generated_files:
@@ -567,6 +560,8 @@ class PPTXProcessor(ITemplateProcessor):
                     for i, old_path in enumerate(generated_files, 1):
                         old_name = os.path.basename(old_path)
                         ext = os.path.splitext(old_name)[1]
+                        # 命名规则（有意为之，勿改）：单张图片不带序号，
+                        # 多张图片带 _i 序号。下游解析需兼容这两种情况。
                         new_name = f"{base_filename}{ext}" if len(generated_files) == 1 else f"{base_filename}_{i}{ext}"
                         new_path = os.path.join(output_dir, new_name)
 

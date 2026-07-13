@@ -19,9 +19,19 @@ from PySide6.QtGui import QFont, QColor
 try:
     from src.config import ConfigManager
     from src.exact_matcher import ExactMatcher
+    from src.config.path_config import _get_program_dir
 except ImportError:
     from config_manager import ConfigManager
     from exact_matcher import ExactMatcher
+    try:
+        from config.path_config import _get_program_dir
+    except ImportError:
+        # 兜底：内联实现（与 path_config._get_program_dir 一致）
+        def _get_program_dir():
+            import sys
+            if getattr(sys, 'frozen', False):
+                return os.path.dirname(os.path.abspath(sys.executable))
+            return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class ConfigLoadingThread(QThread):
@@ -343,7 +353,7 @@ class ConfigSaveLoadDialog(QDialog):
             # 选择保存路径 - 记住上次使用的目录
             last_save_dir = self.config_manager.get("paths.last_config_save_dir", "")
             if not last_save_dir:
-                last_save_dir = os.path.expanduser('~')
+                last_save_dir = _get_program_dir()
 
 
             file_path, _ = QFileDialog.getSaveFileName(
@@ -400,7 +410,7 @@ class ConfigSaveLoadDialog(QDialog):
             # 选择配置文件 - 记住上次使用的目录
             last_load_dir = self.config_manager.get("paths.last_config_load_dir", "")
             if not last_load_dir:
-                last_load_dir = os.path.expanduser('~')
+                last_load_dir = _get_program_dir()
 
             file_path, _ = QFileDialog.getOpenFileName(
                 self,

@@ -1,5 +1,6 @@
 import sys
 import os
+import logging
 from PySide6.QtCore import QThread, Signal
 try:
     from src.ppt_generator import PPTGenerator
@@ -9,6 +10,8 @@ except ImportError:
     from ppt_generator import PPTGenerator
     from config_manager import ConfigManager
     from data_reader import DataReader
+
+logger = logging.getLogger(__name__)
 
 
 class PPTWorkerThread(QThread):
@@ -36,7 +39,7 @@ class PPTWorkerThread(QThread):
         self.task_type = ""  # 当前任务类型：auto_match 或 batch_generate
         self.generate_images = False  # 新增：是否生成图片
         self.image_format = "PNG"  # 新增：图片格式
-        self.image_quality = "原始大小"  # 新增：图片质量
+        self.image_quality = 1.0  # 图片缩放倍数 (1.0/2.0/3.0)
         self.message_template = ""  # 新增：贺语模板
         
     def set_template_path(self, path):
@@ -66,8 +69,12 @@ class PPTWorkerThread(QThread):
         """设置文本增加规则"""
         self.text_addition_rules = rules
 
-    def set_image_generation_params(self, generate_images: bool, image_format: str = "PNG", image_quality: str = "原始大小"):
-        """设置图片生成参数"""
+    def set_image_generation_params(self, generate_images: bool, image_format: str = "PNG", image_quality: float = 1.0):
+        """设置图片生成参数
+
+        Args:
+            image_quality: 图片缩放倍数 (1.0=原始, 2.0=增强, 3.0=高质量)
+        """
         self.generate_images = generate_images
         self.image_format = image_format
         self.image_quality = image_quality
@@ -172,9 +179,10 @@ class PPTWorkerThread(QThread):
             # 这样可以避免配置管理器计算的数据被覆盖
             saved_chengbao_data = None
             if hasattr(ppt_generator, 'data_reader') and ppt_generator.data_reader:
-                if "承保趸期数据" in ppt_generator.data_reader.data.columns:
+                # 注意：data_reader.data 在 load_data 之前可能为 None，必须先判空
+                if ppt_generator.data_reader.data is not None and "承保趸期数据" in ppt_generator.data_reader.data.columns:
                     saved_chengbao_data = ppt_generator.data_reader.data["承保趸期数据"].copy()
-                    # 移除承保趸期数据相关日志，简化输出
+                    logger.debug("已保存现有承保趸期数据，将在重新加载后恢复")
 
             # 加载数据
             if not ppt_generator.load_data(self.data_path):
@@ -214,8 +222,7 @@ class PPTWorkerThread(QThread):
                                         if row_index < len(data_reader.data):
                                             data_reader.data.loc[row_index, "承保趸期数据"] = f"{value}年交SFYP"
                         except Exception as e:
-                            # 移除错误日志，简化输出
-                            pass
+                            logger.warning(f"应用承保趸期用户输入失败: {e}")
 
                     # 重要：确保所有匹配规则都可以正确设置
                     # 检查是否有关联到承保趸期数据的占位符
@@ -239,8 +246,7 @@ class PPTWorkerThread(QThread):
                                     if ph not in chengbao_related_placeholders
                                 }
             except Exception as e:
-                # 移除承保趸期数据计算错误日志，简化输出
-                pass
+                logger.warning(f"承保趸期数据处理失败，将跳过此步骤: {e}")
 
             self.progress_updated.emit(15, "应用匹配规则...")
 

@@ -4,8 +4,17 @@
 """
 
 import os
+import sys
 import logging
 from typing import Optional
+
+# 程序所在目录（兼容开发与打包模式）
+def _get_program_dir() -> str:
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    # 开发模式：项目根目录（src/gui/ 的上两级）
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QGroupBox, QListWidget, QListWidgetItem,
@@ -167,7 +176,7 @@ class SimpleConfigDialog(QDialog):
             file_path, _ = QFileDialog.getSaveFileName(
                 self,
                 "保存配置文件",
-                os.path.join(os.path.expanduser('~'), "gui_config.pptcfg"),
+                os.path.join(_get_program_dir(), "gui_config.pptcfg"),
                 "配置文件 (*.pptcfg);;所有文件 (*.*)"
             )
 
@@ -195,7 +204,7 @@ class SimpleConfigDialog(QDialog):
             file_path, _ = QFileDialog.getOpenFileName(
                 self,
                 "加载配置文件",
-                os.path.expanduser('~'),
+                _get_program_dir(),
                 "配置文件 (*.pptcfg);;所有文件 (*.*)"
             )
 
