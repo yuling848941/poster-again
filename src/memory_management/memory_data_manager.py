@@ -32,10 +32,10 @@ class MemoryDataManager:
             # 使用文件路径和修改时间生成哈希
             stat = os.stat(file_path)
             content = f"{file_path}_{stat.st_mtime}_{stat.st_size}"
-            return hashlib.md5(content.encode()).hexdigest()[:16]
+            return hashlib.sha256(content.encode()).hexdigest()[:16]
         except (OSError, IOError):
             # 如果无法获取文件状态，使用文件路径的哈希
-            return hashlib.md5(file_path.encode()).hexdigest()[:16]
+            return hashlib.sha256(file_path.encode()).hexdigest()[:16]
 
     def load_excel_data(self, file_path: str, sheet_name: str = None) -> pd.DataFrame:
         """

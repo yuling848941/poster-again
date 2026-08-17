@@ -460,70 +460,25 @@ class MainWindow(QMainWindow):
 
     def check_office_availability(self, show_result: bool = False) -> bool:
         """
-        检查 Office 可用性（带缓存机制）
+        检查图片导出可用性
+
+        纯 Python 分支：图片导出使用内置 Pillow 渲染引擎，
+        不再依赖 Microsoft Office / WPS Office，COM 检测已禁用，始终返回可用。
 
         Args:
-            show_result: 是否显示检测结果对话框
+            show_result: 是否显示提示对话框
 
         Returns:
-            bool: Office 是否可用
+            bool: 始终 True
         """
-        try:
-            from src.config import ConfigManager
-            from src.core.detectors.office_suite_detector import OfficeSuiteDetector
-
-            config_manager = ConfigManager()
-
-            # 1. 首先尝试从缓存加载
-            cached_office = config_manager.load_office_cache()
-            if cached_office:
-                if show_result:
-                    QMessageBox.information(
-                        self,
-                        "Office 检测成功（缓存）",
-                        f"使用缓存的 Office 信息：\n"
-                        f"{cached_office['name']}\n"
-                        f"版本：{cached_office.get('version', '未知')}\n"
-                        f"检测时间：{cached_office.get('detected_at', '未知')}"
-                    )
-                return True
-
-            # 2. 缓存失效，重新检测
-            if show_result:
-                QMessageBox.information(self, "Office 检测", "开始重新检测 Office...")
-
-            office_info = OfficeSuiteDetector.detect_office_suite()
-            if office_info:
-                # 保存缓存
-                config_manager.save_office_cache(office_info)
-                if show_result:
-                    QMessageBox.information(
-                        self,
-                        "Office 检测成功",
-                        f"检测到 Office 套件：\n"
-                        f"{office_info['name']}\n"
-                        f"版本：{office_info.get('version', '未知')}"
-                    )
-                return True
-            else:
-                if show_result:
-                    QMessageBox.warning(
-                        self,
-                        "Office 检测失败",
-                        "未检测到 Microsoft Office 或 WPS Office。\n"
-                        "请确保已安装 Office 套件，或尝试重新安装。"
-                    )
-                return False
-
-        except Exception as e:
-            logger.error(f"Office 可用性检查失败：{str(e)}")
-            if show_result:
-                QMessageBox.critical(
-                    self,
-                    "Office 检测错误",
-                    f"检测过程中发生错误：\n{str(e)}"
-                )
-            return False
+        if show_result:
+            QMessageBox.information(
+                self,
+                "图片导出引擎",
+                "当前版本使用内置纯 Python 渲染引擎导出图片，\n"
+                "无需安装 Microsoft Office 或 WPS Office。"
+            )
+        return True
 
     def load_message_template(self):
         """加载保存的贺语模板 (委托给 SettingsManager)"""
@@ -889,11 +844,6 @@ class MainWindow(QMainWindow):
         self.config_btn.setEnabled(True)
         self.config_btn.setToolTip("")
 
-    def edit_match_rule(self, row):
-        """编辑匹配规则（已停用）"""
-        # 此方法已停用，但保留以防将来需要
-        pass
-        
     def _on_match_table_context_menu(self, pos):
         """
         匹配表格右键菜单信号适配器
@@ -1089,19 +1039,18 @@ class MainWindow(QMainWindow):
                 try:
                     ppt_generator = self.worker_thread.get_ppt_generator()
                     if ppt_generator:
-                        # 如果ppt_generator还没有数据，加载数据
-                        if not hasattr(ppt_generator, 'data') or ppt_generator.data is None:
-                            logger.info("为PPT生成器加载数据...")
-                            if not ppt_generator.load_data(excel_file):
-                                logger.info("PPT生成器数据加载失败，将重新加载...")
-                                # 如果load_data失败，尝试手动设置
-                                ppt_generator.data = data_reader.data
-                                ppt_generator.data_loaded = True
+                        # 重要：PPTGenerator 的数据存储在 data_reader.data（不是 generator.data）。
+                        # 若缺少承保趸期数据列，直接用主窗口已处理好的 data_reader 替换，
+                        # 确保后续批量生成使用包含承保趸期数据的完整数据。
+                        generator_reader = getattr(ppt_generator, 'data_reader', None)
+                        if generator_reader is None or generator_reader.data is None or \
+                                "承保趸期数据" not in generator_reader.data.columns:
+                            logger.info("为PPT生成器同步承保趸期数据...")
+                            ppt_generator.data_reader = data_reader
+                            ppt_generator.data_loaded = True
 
-                        # 如果承保趸期数据列不存在，添加到ppt_generator的数据中
-                        if "承保趸期数据" not in ppt_generator.data.columns:
-                            logger.info("为PPT生成器添加承保趸期数据列...")
-                            ppt_generator.data = data_reader.data.copy()
+                        # 同步 ExactMatcher 的数据源，保证匹配规则基于最新数据
+                        ppt_generator.exact_matcher.set_data(ppt_generator.data_reader.data)
                 except Exception as e:
                     logger.debug(f"PPT 生成器数据同步警告：{str(e)}")
             # 检查是否有需要用户输入的行（R=1的情况）
@@ -1282,19 +1231,11 @@ class MainWindow(QMainWindow):
 
         QMessageBox.information(self, "完成", f"{file_type}批量生成完成！成功生成 {count} 个文件")
 
-        # ✅ 新增：完全释放所有COM资源，包括PowerPoint应用程序
+        # 重新初始化模板处理器（内部会关闭旧处理器并释放资源）
         try:
             if hasattr(self.worker_thread, 'get_ppt_generator'):
                 ppt_generator = self.worker_thread.get_ppt_generator()
                 if ppt_generator:
-                    # 关闭演示文稿
-                    if hasattr(ppt_generator.template_processor, 'close_presentation'):
-                        ppt_generator.template_processor.close_presentation()
-
-                    # 关闭PowerPoint应用程序
-                    ppt_generator.close_template_processor()
-
-                    # ✅ 新增：重新初始化模板处理器，确保下次使用全新的实例
                     ppt_generator._initialize_template_processor()
 
         except Exception as e:
@@ -1309,24 +1250,15 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("错误")
         QMessageBox.critical(self, "错误", message)
 
-        # ✅ 新增：即使出错也要完全释放所有资源，避免文件锁定
+        # 即使出错也释放资源，避免文件锁定
         try:
             if hasattr(self.worker_thread, 'get_ppt_generator'):
                 ppt_generator = self.worker_thread.get_ppt_generator()
                 if ppt_generator:
-                    # 关闭演示文稿
-                    if hasattr(ppt_generator.template_processor, 'close_presentation'):
-                        ppt_generator.template_processor.close_presentation()
-
-                    # 关闭PowerPoint应用程序
-                    ppt_generator.close_template_processor()
-
-                    # ✅ 新增：重新初始化模板处理器，确保下次使用时正常
                     ppt_generator._initialize_template_processor()
 
         except Exception as e:
-            # 移除错误处理日志，简化输出
-            pass
+            logger.warning(f"释放PPT生成器资源时出错: {e}")
 
         # 重新启用按钮
         self.auto_match_btn.setEnabled(True)

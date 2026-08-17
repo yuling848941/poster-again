@@ -12,7 +12,7 @@ import tempfile
 from unittest.mock import Mock, MagicMock, patch
 
 # 添加项目根目录到路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 def create_test_excel():
     """创建包含R=1行的测试Excel文件"""

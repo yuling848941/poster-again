@@ -594,16 +594,19 @@ class SimpleConfigManager:
                         ppt_generator = main_window.worker_thread.get_ppt_generator()
                         if ppt_generator:
                             # 直接使用DataReader已计算的数据，避免重复加载和重复计算
+                            # 注意：PPTGenerator 没有 .data 属性，数据存储在 data_reader.data
                             logger.info("为PPT生成器同步承保趸期数据...")
-                            ppt_generator.data = data_reader.data.copy()
                             ppt_generator.data_loaded = True
 
-                            # ⚠️ 关键：同时同步到ppt_generator的data_reader实例
-                            # 这样在PPTWorkerThread中检查时，数据才一致
                             if hasattr(ppt_generator, 'data_reader') and ppt_generator.data_reader:
                                 logger.info("为PPT生成器的data_reader同步承保趸期数据...")
                                 ppt_generator.data_reader.data = data_reader.data.copy()
                                 logger.info("PPT生成器data_reader数据同步完成")
+
+                            # 同步 ExactMatcher 数据源，保证匹配规则基于最新数据
+                            if hasattr(ppt_generator, 'exact_matcher') and ppt_generator.exact_matcher:
+                                ppt_generator.exact_matcher.set_data(data_reader.data)
+                                logger.info("PPT生成器ExactMatcher数据同步完成")
 
                             logger.info("PPT生成器数据同步完成")
                     except Exception as e:

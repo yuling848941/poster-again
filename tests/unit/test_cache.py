@@ -1,82 +1,87 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-测试缓存机制
+测试配置管理器中的 Office 缓存机制（保存/加载/清除/状态）
+
+注意：原测试针对已删除的 OfficeSuiteManager，现改为验证当前
+ConfigManager 提供的 office_cache 相关方法。
 """
 
-import sys
 import os
-import time
+import sys
+import tempfile
+import shutil
 
-# 添加src路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# 将项目根目录加入 sys.path，确保 src 包可导入
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from src.config import ConfigManager
-from src.gui.office_suite_detector import OfficeSuiteManager
 
-def test_cache():
-    """测试缓存机制"""
+
+def test_office_cache():
+    """测试 Office 缓存机制：保存/加载/清除/状态"""
     print("=" * 60)
-    print("测试启动性能优化 - 缓存机制")
+    print("测试 Office 缓存机制")
     print("=" * 60)
 
-    # 创建配置管理器
-    config_manager = ConfigManager()
+    # 使用独立临时目录，避免污染用户配置（ConfigManager 开发环境会探测
+    # cwd 下的 PosterAgain_config.yaml，因此切换到临时目录）
+    tmp_dir = tempfile.mkdtemp()
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_dir)
+        config_file = os.path.join(tmp_dir, "test_config.yaml")
+        config_manager = ConfigManager(config_file)
 
-    # 第一次初始化（应该会进行实际检测）
-    print("\n[1] 第一次初始化办公套件管理器...")
-    start = time.time()
-    manager = OfficeSuiteManager(config_manager)
-    manager.initialize()
-    elapsed1 = time.time() - start
-    print(f"    耗时: {elapsed1:.3f}秒")
+        # 初始状态：未缓存
+        print("\n[1] 初始缓存状态...")
+        status = config_manager.get_office_cache_status()
+        print(f"    状态: {status}")
+        assert config_manager.load_office_cache() is None, "初始状态不应有缓存"
 
-    # 检查缓存
-    print("\n[2] 检查缓存...")
-    cache_data = config_manager.load_office_cache()
-    if cache_data:
-        print("    ✓ 缓存已保存")
-        print(f"    缓存时间: {cache_data.get('timestamp', 'N/A')}")
-        print(f"    有效期至: {cache_data.get('valid_until', 'N/A')}")
-        print(f"    可用套件: {cache_data.get('available_suites', [])}")
-        print(f"    当前选择: {cache_data.get('current_suite', 'N/A')}")
-    else:
-        print("    ✗ 未找到缓存")
+        # 保存缓存
+        print("\n[2] 保存 Office 缓存...")
+        office_info = {
+            "type": "microsoft",
+            "name": "Microsoft Office PowerPoint",
+            "path": "C:\\Program Files\\Microsoft Office\\root\\Office16",
+            "version": "16.0",
+        }
+        ok = config_manager.save_office_cache(office_info)
+        assert ok, "保存缓存失败"
+        print("    OK 缓存已保存")
 
-    # 第二次初始化（应该使用缓存）
-    print("\n[3] 第二次初始化办公套件管理器（应使用缓存）...")
-    start = time.time()
-    manager2 = OfficeSuiteManager(config_manager)
-    manager2.initialize()
-    elapsed2 = time.time() - start
-    print(f"    耗时: {elapsed2:.3f}秒")
+        # 加载缓存
+        print("\n[3] 加载 Office 缓存...")
+        loaded = config_manager.load_office_cache()
+        assert loaded is not None, "加载缓存失败"
+        assert loaded.get("type") == "microsoft", f"缓存类型不匹配: {loaded.get('type')}"
+        assert loaded.get("name") == office_info["name"], "缓存名称不匹配"
+        print(f"    OK 缓存加载成功: type={loaded.get('type')}, name={loaded.get('name')}")
 
-    # 性能对比
-    print("\n[4] 性能对比:")
-    if elapsed1 > 0 and elapsed2 > 0:
-        improvement = (elapsed1 - elapsed2) / elapsed1 * 100
-        print(f"    首次初始化: {elapsed1:.3f}秒")
-        print(f"    使用缓存:   {elapsed2:.3f}秒")
-        print(f"    性能提升:   {improvement:.1f}%")
+        # 缓存状态
+        print("\n[4] 缓存状态...")
+        status = config_manager.get_office_cache_status()
+        print(f"    状态: {status}")
+        assert status.get("cached") is True, "缓存状态应为已缓存"
 
-    # 测试清除缓存
-    print("\n[5] 测试清除缓存...")
-    if config_manager.clear_office_cache():
-        print("    ✓ 缓存已清除")
-    else:
-        print("    ✗ 清除缓存失败")
+        # 清除缓存
+        print("\n[5] 清除 Office 缓存...")
+        ok = config_manager.clear_office_cache()
+        assert ok, "清除缓存失败"
+        assert config_manager.load_office_cache() is None, "清除后不应有缓存"
+        print("    OK 缓存已清除")
 
-    # 验证缓存已清除
-    print("\n[6] 验证缓存已清除...")
-    cache_data = config_manager.load_office_cache()
-    if cache_data:
-        print("    ✗ 缓存仍然存在")
-    else:
-        print("    ✓ 缓存已成功清除")
+        print("\n" + "=" * 60)
+        print("测试通过！")
+        print("=" * 60)
+        return True
 
-    print("\n" + "=" * 60)
-    print("测试完成")
-    print("=" * 60)
+    finally:
+        os.chdir(old_cwd)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
-    test_cache()
+    success = test_office_cache()
+    sys.exit(0 if success else 1)

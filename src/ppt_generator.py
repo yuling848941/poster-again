@@ -477,7 +477,8 @@ class PPTGenerator:
                         logger.info(f"生成PPT: {output_path}")
                     except Exception as e:
                         logger.error(f"生成第 {index + 1} 个文件时出错: {str(e)}")
-                        continue
+                        # 注意：失败后不能 continue，必须继续执行下方的 load_template，
+                        # 否则下一行会在被污染的内存模板上生成，导致数据串行（H2 修复）
                 
                 # 重新加载模板以准备下一次生成
                 if index < data_count - 1:
@@ -519,46 +520,54 @@ class PPTGenerator:
     
     def get_office_info(self) -> str:
         """
-        获取 Office 套件信息
+        获取图片导出引擎信息
+
+        纯 Python 分支：图片导出不再依赖 Office，COM 检测已禁用
 
         Returns:
-            str: Office 套件信息字符串
+            str: 引擎信息字符串
         """
-        try:
-            try:
-                from src.core.detectors.office_suite_detector import OfficeSuiteDetector
-            except ImportError:
-                from core.detectors.office_suite_detector import OfficeSuiteDetector
-            return OfficeSuiteDetector.get_office_info()
-        except Exception as e:
-            logger.debug(f"获取 Office 信息时出错: {e}")
-            return "无法检测 Office 套件"
+        return "纯 Python 渲染引擎（Pillow，无需 Office/WPS）"
 
     def is_office_available(self) -> bool:
         """
-        检查是否有可用的 Office 套件
+        检查图片导出是否可用
+
+        纯 Python 分支：渲染引擎内置，始终可用，COM 检测已禁用
 
         Returns:
-            bool: 是否有可用的 Office 套件
+            bool: 始终 True
         """
-        try:
-            try:
-                from src.core.detectors.office_suite_detector import OfficeSuiteDetector
-            except ImportError:
-                from core.detectors.office_suite_detector import OfficeSuiteDetector
-            return OfficeSuiteDetector.is_office_available()
-        except Exception as e:
-            logger.debug(f"检查 Office 可用性时出错: {e}")
-            return False
+        return True
 
-    def close(self):
-        """关闭PPT生成器，释放资源"""
+    def close_template_processor(self):
+        """关闭当前模板处理器，释放资源"""
         try:
             if self.template_processor:
                 self.template_processor.close()
-                logger.info("PPT生成器资源已释放")
+                logger.info("模板处理器已关闭")
         except Exception as e:
-            logger.error(f"关闭PPT生成器时出错: {str(e)}")
+            logger.error(f"关闭模板处理器时出错: {str(e)}")
+
+    def _initialize_template_processor(self):
+        """
+        重新初始化模板处理器
+
+        在批量生成结束后调用，确保下次生成使用全新的模板处理器实例，
+        避免旧状态（已替换的占位符等）残留。
+        """
+        try:
+            self.close_template_processor()
+            self.template_processor = self.factory.create_pptx_processor()
+            self.template_loaded = False
+            self.template_path = None
+            logger.info("模板处理器已重新初始化")
+        except Exception as e:
+            logger.error(f"重新初始化模板处理器时出错: {str(e)}")
+
+    def close(self):
+        """关闭PPT生成器，释放资源"""
+        self.close_template_processor()
 
     def __enter__(self):
         """上下文管理器入口"""

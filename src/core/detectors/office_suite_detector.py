@@ -53,12 +53,9 @@ class OfficeSuiteDetector:
     ]
 
     @classmethod
-    def detect_office_suite(cls, use_cache: bool = True) -> Optional[Dict[str, Any]]:
+    def detect_office_suite(cls) -> Optional[Dict[str, Any]]:
         """
         检测系统中安装的 Office 套件
-
-        Args:
-            use_cache: 是否使用缓存（如果之前检测成功过）
 
         Returns:
             Optional[Dict]: 检测到的 Office 套件信息，如果没有安装则返回 None
@@ -263,8 +260,8 @@ class OfficeSuiteDetector:
                     powerpoint = win32com.client.GetActiveObject("PowerPoint.Application")
                     if powerpoint:
                         return True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"COM 探测失败: {e}")
 
                 # 没有现成实例，才启动临时实例探测（此情况下我们是 owner，Quit 安全）
                 try:
@@ -272,8 +269,8 @@ class OfficeSuiteDetector:
                     if powerpoint:
                         powerpoint.Quit()
                         return True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"COM 探测失败: {e}")
 
             elif office_type == "wps":
                 # 先探测用户已有的 WPS 实例（不启动新进程，零副作用）
@@ -283,16 +280,16 @@ class OfficeSuiteDetector:
                         wps = win32com.client.GetActiveObject(progid)
                         if wps:
                             return True
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"COM 探测失败: {e}")
 
                     try:
                         wps = win32com.client.Dispatch(progid)
                         if wps:
                             wps.Quit()
                             return True
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"COM 探测失败: {e}")
 
             return False
 
@@ -323,8 +320,8 @@ class OfficeSuiteDetector:
                     'version': version or '未知版本',
                     'progid': 'PowerPoint.Application'
                 }
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"COM 探测失败: {e}")
 
             # 没有现成实例，才启动临时实例探测（此情况下 Quit 安全）
             try:
@@ -339,8 +336,8 @@ class OfficeSuiteDetector:
                     'version': version or '未知版本',
                     'progid': 'PowerPoint.Application'
                 }
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"COM 探测失败: {e}")
 
             # 尝试 WPS Office
             # 先探测用户已有的 WPS 实例（零副作用）
@@ -356,8 +353,8 @@ class OfficeSuiteDetector:
                         'version': '未知版本',
                         'progid': progid
                     }
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"COM 探测失败: {e}")
 
                 try:
                     wps = win32com.client.Dispatch(progid)
@@ -370,8 +367,8 @@ class OfficeSuiteDetector:
                         'version': '未知版本',
                         'progid': progid
                     }
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"COM 探测失败: {e}")
 
             return None
 
