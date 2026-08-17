@@ -3,7 +3,8 @@
 PPT 批量生成工具 - GUI 应用程序入口
 
 使用纯 Python 的 python-pptx 库进行 PPT 生成，无需 Microsoft Office 或 WPS。
-（图片导出为可选功能，需要 Office 套件，详见 AGENTS.md）
+图片导出同样使用内置纯 Python 渲染引擎（Pillow），不依赖任何 Office 套件；
+渲染前自动预检，不支持元素的告警见日志 [预检] 条目（详见 AGENTS.md）。
 """
 
 import sys
