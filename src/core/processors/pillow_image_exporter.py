@@ -61,14 +61,6 @@ def _hex2rgb(h):
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def _lerp(a, b, t):
-    return a + (b - a) * t
-
-
-def _lerp_color(c1, c2, t):
-    return tuple(int(round(_lerp(a, b, t))) for a, b in zip(c1, c2))
-
-
 class _Theme:
     """从 pptx zip 解析 theme 配色，供 schemeClr 映射"""
 
@@ -197,29 +189,25 @@ def _read_style(run, theme):
 
 
 def _make_linear_gradient(w, h, stops, ang_deg):
-    """按 stops [(pos, rgb, alpha)] 生成 w×h RGBA 线性渐变图。ang 0°=左→右，90°=上→下"""
+    """按 stops [(pos, rgb, alpha)] 生成 w×h RGBA 线性渐变图。ang 0°=左→右，90°=上→下（numpy 加速）"""
+    import numpy as np
     theta = math.radians(ang_deg)
     vx, vy = math.cos(theta), math.sin(theta)
     corners = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]
     projs = [x * vx + y * vy for x, y in corners]
     p0, p1 = min(projs), max(projs)
     span = (p1 - p0) or 1.0
-    grad = Image.new('RGBA', (w, h))
-    px = grad.load()
-    for y in range(h):
-        for x in range(w):
-            t = min(max(((x * vx + y * vy) - p0) / span, 0.0), 1.0)
-            for i in range(len(stops) - 1):
-                pa, ca, aa = stops[i]
-                pb, cb, ab = stops[i + 1]
-                if pa <= t <= pb:
-                    tt = (t - pa) / (pb - pa) if pb > pa else 0.0
-                    px[x, y] = (*_lerp_color(ca, cb, tt), int(round(_lerp(aa, ab, tt) * 255)))
-                    break
-            else:
-                pos, c, a = stops[-1] if t >= stops[-1][0] else stops[0]
-                px[x, y] = (*c, int(round(a * 255)))
-    return grad
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    t = np.clip(((xx * vx + yy * vy) - p0) / span, 0.0, 1.0)
+    pos = np.array([s[0] for s in stops], dtype=np.float32)
+    channels = [
+        np.interp(t, pos, np.array([s[1][c] for s in stops], dtype=np.float32))
+        for c in range(3)
+    ]
+    channels.append(np.interp(
+        t, pos, np.array([s[2] * 255 for s in stops], dtype=np.float32)))
+    arr = np.dstack(channels).round().astype(np.uint8)
+    return Image.fromarray(arr, 'RGBA')
 
 
 class PillowImageExporter:
@@ -238,6 +226,23 @@ class PillowImageExporter:
     def get_engine_info() -> str:
         return "纯 Python 渲染引擎（Pillow，无需 Office/WPS）"
 
+    def precheck(self, pptx_path: str):
+        """渲染预检（白名单制），返回问题清单；字体检查自动接入 FontChecker"""
+        try:
+            from src.core.processors.render_precheck import RenderPrecheck
+        except ImportError:
+            from core.processors.render_precheck import RenderPrecheck
+        installed = None
+        try:
+            try:
+                from src.core.utils.font_checker import FontChecker
+            except ImportError:
+                from core.utils.font_checker import FontChecker
+            installed = FontChecker().get_installed_fonts()
+        except Exception as e:
+            logger.debug(f"字体检查跳过: {e}")
+        return RenderPrecheck(installed_fonts=installed).check_pptx(pptx_path)
+
     def export_to_images(self, pptx_path: str, output_dir: str,
                          image_format: str = "PNG", quality: float = 1.0) -> List[str]:
         """
@@ -255,6 +260,13 @@ class PillowImageExporter:
         if not os.path.exists(pptx_path):
             raise FileNotFoundError(f"文件不存在：{pptx_path}")
         os.makedirs(output_dir, exist_ok=True)
+
+        # 渲染预检（白名单制）：本分支无 COM 兜底，问题仅告警后尽力渲染
+        issues = self.precheck(pptx_path)
+        for issue in issues:
+            logger.warning(f"[预检] 第{issue.slide}页 {issue.shape!r} [{issue.code}] {issue.message}")
+        if issues:
+            logger.warning(f"[预检] 共 {len(issues)} 项不支持/风险提示，输出可能与 PowerPoint 存在差异")
 
         prs = Presentation(pptx_path)
         theme = _Theme(pptx_path)
@@ -280,6 +292,7 @@ class PillowImageExporter:
         W = int(round(prs.slide_width * scale))
         H = int(round(prs.slide_height * scale))
         canvas = Image.new('RGBA', (W, H), (255, 255, 255, 255))
+        self._draw_slide_background(canvas, slide, theme, W, H)
         for shape in slide.shapes:
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                 self._draw_picture(canvas, shape, scale)
@@ -290,6 +303,45 @@ class PillowImageExporter:
                     f"[纯Python渲染] 跳过不支持的形状: type={shape.shape_type} "
                     f"name={shape.name!r}（该元素不会出现在输出图片中）")
         return canvas
+
+    def _draw_slide_background(self, canvas, slide, theme, W, H):
+        """渲染 p:bg 幻灯片背景（显式 bgPr：纯色/线性渐变/图片平铺拉伸）"""
+        bg = slide._element.find(qn('p:cSld') + '/' + qn('p:bg'))
+        if bg is None:
+            return
+        bgPr = bg.find(qn('p:bgPr'))
+        if bgPr is None:
+            return  # bgRef 引用母版/主题：预检已告警，保持白底
+        try:
+            solid = bgPr.find(qn('a:solidFill'))
+            if solid is not None:
+                rgb, alpha = _parse_color_el(list(solid)[0], theme)
+                color_img = Image.new('RGBA', (W, H), (*rgb, int(alpha * 255)))
+                canvas.alpha_composite(color_img)
+                return
+            grad = bgPr.find(qn('a:gradFill'))
+            if grad is not None:
+                lin = grad.find(qn('a:lin'))
+                if lin is not None:
+                    stops = []
+                    for gs in grad.findall(qn('a:gsLst') + '/' + qn('a:gs')):
+                        pos = int(gs.get('pos')) / 100000.0
+                        rgb, a = _parse_color_el(list(gs)[0], theme)
+                        stops.append((pos, rgb, a))
+                    canvas.alpha_composite(
+                        _make_linear_gradient(W, H, stops, int(lin.get('ang')) / 60000.0))
+                return
+            blipFill = bgPr.find(qn('a:blipFill'))
+            if blipFill is not None:
+                blip = blipFill.find(qn('a:blip'))
+                if blip is not None:
+                    rId = blip.get(qn('r:embed'))
+                    part = slide.part.related_part(rId)
+                    import io
+                    img = Image.open(io.BytesIO(part.blob)).convert('RGBA')
+                    canvas.alpha_composite(img.resize((W, H), Image.LANCZOS))
+        except Exception as e:
+            logger.warning(f"[纯Python渲染] 幻灯片背景渲染失败（保持白底）: {e}")
 
     def _draw_picture(self, canvas, shape, scale):
         import io
@@ -332,10 +384,6 @@ class PillowImageExporter:
             toks = []
             for run in para.runs:
                 st = _read_style(run, theme)
-                if st.fill is None:
-                    logger.warning(
-                        f"[纯Python渲染] 形状 {shape.name!r} 的文字未显式指定颜色/渐变，"
-                        f"若模板依赖母版/版式继承格式，输出可能与 PowerPoint 不一致")
                 for tk in _tokenize(run.text):
                     toks.append((tk, st))
             paragraphs.append((str(algn), lnSpc, toks))
