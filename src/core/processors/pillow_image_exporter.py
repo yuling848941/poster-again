@@ -22,13 +22,21 @@ import logging
 import math
 import os
 import re
-import zipfile
 from typing import List
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
+
+try:
+    from src.core.processors.format_inheritance import (
+        FormatResolver, load_theme, parse_color_el, parse_fill, resolve_bg_ref,
+    )
+except ImportError:
+    from core.processors.format_inheritance import (
+        FormatResolver, load_theme, parse_color_el, parse_fill, resolve_bg_ref,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -54,80 +62,6 @@ _FONT_FILES = {
     ('楷体', True): r'C:\Windows\Fonts\simkai.ttf',
 }
 _DEFAULT_FONT = r'C:\Windows\Fonts\msyh.ttc'
-
-
-def _hex2rgb(h):
-    h = h.lstrip('#')
-    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
-
-
-class _Theme:
-    """从 pptx zip 解析 theme 配色，供 schemeClr 映射"""
-
-    def __init__(self, pptx_path: str):
-        self.colors = {'dk1': '#000000', 'lt1': '#FFFFFF', 'dk2': '#000000', 'lt2': '#FFFFFF'}
-        try:
-            with zipfile.ZipFile(pptx_path) as z:
-                names = [n for n in z.namelist()
-                         if re.match(r'ppt/theme/theme\d+\.xml$', n)]
-                if names:
-                    xml = z.read(sorted(names)[0]).decode('utf-8', errors='ignore')
-                    for name in ('dk1', 'lt1', 'dk2', 'lt2',
-                                 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'):
-                        m = re.search(rf'<a:{name}>(.*?)</a:{name}>', xml, re.S)
-                        if not m:
-                            continue
-                        inner = m.group(1)
-                        m2 = re.search(r'srgbClr val="([0-9A-Fa-f]{6})"', inner)
-                        if m2:
-                            self.colors[name] = '#' + m2.group(1).upper()
-                            continue
-                        m2 = re.search(r'sysClr val="\w+" lastClr="([0-9A-Fa-f]{6})"', inner)
-                        if m2:
-                            self.colors[name] = '#' + m2.group(1).upper()
-        except Exception as e:
-            logger.warning(f"解析主题配色失败（使用默认黑白）: {e}")
-
-
-def _parse_color_el(clr_el, theme):
-    """解析颜色元素（srgbClr/schemeClr/sysClr），返回 (rgb_tuple, alpha 0~1)"""
-    from lxml import etree
-    tag = etree.QName(clr_el).localname
-    if tag == 'srgbClr':
-        rgb = _hex2rgb(clr_el.get('val'))
-    elif tag == 'schemeClr':
-        rgb = _hex2rgb(theme.colors.get(clr_el.get('val'), '#000000'))
-    elif tag == 'sysClr':
-        rgb = _hex2rgb(clr_el.get('lastClr') or '000000')
-    else:
-        rgb = (0, 0, 0)
-    alpha = 1.0
-    a = clr_el.find(qn('a:alpha'))
-    if a is not None:
-        alpha = int(a.get('val')) / 100000.0
-    return rgb, alpha
-
-
-def _parse_run_fill(rPr, theme):
-    """返回 None（继承=黑） | ('solid', rgb, alpha) | ('grad', [stops], ang_deg)"""
-    if rPr is None:
-        return None
-    grad = rPr.find(qn('a:gradFill'))
-    if grad is not None:
-        stops = []
-        for gs in grad.findall(qn('a:gsLst') + '/' + qn('a:gs')):
-            pos = int(gs.get('pos')) / 100000.0
-            clr = list(gs)[0]
-            rgb, a = _parse_color_el(clr, theme)
-            stops.append((pos, rgb, a))
-        lin = grad.find(qn('a:lin'))
-        ang = int(lin.get('ang')) / 60000.0 if lin is not None else 0.0
-        return ('grad', stops, ang)
-    solid = rPr.find(qn('a:solidFill'))
-    if solid is not None:
-        rgb, a = _parse_color_el(list(solid)[0], theme)
-        return ('solid', rgb, a)
-    return None
 
 
 def _parse_shadow(rPr):
@@ -162,30 +96,23 @@ class _Style:
                 repr(self.fill), repr(self.shadow))
 
 
-def _read_style(run, theme):
+def _font_path_for(typeface, bold):
+    """字体名 -> 字体文件；未注册字体回退微软雅黑并告警"""
+    if typeface:
+        for key in ((typeface, bold), (typeface, False),
+                    (typeface.replace('-Bold', ''), bold)):
+            if key in _FONT_FILES:
+                return _FONT_FILES[key]
+        logger.warning(f"字体未注册，回退微软雅黑: {typeface!r}")
+    return _FONT_FILES.get(('微软雅黑', bold), _DEFAULT_FONT)
+
+
+def _style_from_props(run, props):
+    """把继承解析出的有效属性转换为渲染样式（阴影只取显式 rPr）"""
     rPr = run._r.find(qn('a:rPr'))
-    size_pt, bold, italic, spc_pt = 18.0, False, False, 0.0
-    font_path = None
-    if rPr is not None:
-        if rPr.get('sz'):
-            size_pt = int(rPr.get('sz')) / 100.0
-        bold = rPr.get('b') == '1'
-        italic = rPr.get('i') == '1'
-        if rPr.get('spc'):
-            spc_pt = int(rPr.get('spc')) / 100.0
-        for tag in ('a:ea', 'a:latin'):
-            tf_el = rPr.find(qn(tag))
-            if tf_el is not None and tf_el.get('typeface'):
-                path = _FONT_FILES.get((tf_el.get('typeface'), bold))
-                if path:
-                    font_path = path
-                    break
-                logger.warning(f"字体未注册，回退微软雅黑: {tf_el.get('typeface')!r}")
-    if font_path is None:
-        font_path = _FONT_FILES.get(('微软雅黑', bold), _DEFAULT_FONT)
-    fill = _parse_run_fill(rPr, theme)
     shadow = _parse_shadow(rPr)
-    return _Style(size_pt, bold, italic, spc_pt, fill, shadow, font_path)
+    return _Style(props['sz_pt'], props['bold'], props['italic'], props['spc_pt'],
+                  props['fill'], shadow, _font_path_for(props['typeface'], props['bold']))
 
 
 def _make_linear_gradient(w, h, stops, ang_deg):
@@ -269,7 +196,7 @@ class PillowImageExporter:
             logger.warning(f"[预检] 共 {len(issues)} 项不支持/风险提示，输出可能与 PowerPoint 存在差异")
 
         prs = Presentation(pptx_path)
-        theme = _Theme(pptx_path)
+        theme = load_theme(pptx_path)
         ext = 'jpg' if image_format.upper() in ('JPG', 'JPEG') else image_format.lower()
         self._dpi = 96.0 * quality
 
@@ -292,33 +219,82 @@ class PillowImageExporter:
         W = int(round(prs.slide_width * scale))
         H = int(round(prs.slide_height * scale))
         canvas = Image.new('RGBA', (W, H), (255, 255, 255, 255))
-        self._draw_slide_background(canvas, slide, theme, W, H)
+
+        layout = slide.slide_layout
+        master = layout.slide_master
+
+        # 背景继承链：slide -> layout -> master（取第一个 bgPr）
+        for container in (slide, layout, master):
+            if self._draw_slide_background(canvas, container, theme, W, H):
+                break
+
+        # z 序：母版静态形状 -> 版式静态形状 -> 幻灯片形状
+        # （版式/母版的占位符是继承载体不渲染，PowerPoint 亦如此）
+        for container in (master, layout):
+            resolver = FormatResolver(container, theme.colors, theme.fonts)
+            for shape in container.shapes:
+                if self._is_placeholder(shape):
+                    continue
+                self._draw_shape(canvas, shape, resolver, theme.colors, quality, scale)
+
+        resolver = FormatResolver(slide, theme.colors, theme.fonts)
         for shape in slide.shapes:
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                self._draw_picture(canvas, shape, scale)
-            elif shape.has_text_frame:
-                self._draw_text_frame(canvas, shape, theme, quality, scale)
-            else:
-                logger.warning(
-                    f"[纯Python渲染] 跳过不支持的形状: type={shape.shape_type} "
-                    f"name={shape.name!r}（该元素不会出现在输出图片中）")
+            self._draw_shape(canvas, shape, resolver, theme.colors, quality, scale)
         return canvas
 
-    def _draw_slide_background(self, canvas, slide, theme, W, H):
-        """渲染 p:bg 幻灯片背景（显式 bgPr：纯色/线性渐变/图片平铺拉伸）"""
-        bg = slide._element.find(qn('p:cSld') + '/' + qn('p:bg'))
+    @staticmethod
+    def _is_placeholder(shape):
+        from pptx.oxml.ns import qn as _qn
+        nvpr = shape._element.find(
+            _qn('p:nvSpPr') + '/' + _qn('p:nvPr'))
+        if nvpr is None:
+            nvpr = shape._element.find(_qn('p:nvPicPr') + '/' + _qn('p:nvPr'))
+        return nvpr is not None and nvpr.find(_qn('p:ph')) is not None
+
+    def _draw_shape(self, canvas, shape, resolver, theme_colors, quality, scale):
+        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+            self._draw_picture(canvas, shape, scale)
+        elif shape.has_text_frame:
+            self._draw_text_frame(canvas, shape, resolver, theme_colors,
+                                  quality, scale)
+        else:
+            logger.warning(
+                f"[纯Python渲染] 跳过不支持的形状: type={shape.shape_type} "
+                f"name={shape.name!r}（该元素不会出现在输出图片中）")
+
+    def _draw_slide_background(self, canvas, container, theme, W, H) -> bool:
+        """渲染 p:bg 背景（bgPr 显式填充或 bgRef 主题样式引用）。返回是否已渲染"""
+        bg = container._element.find(qn('p:cSld') + '/' + qn('p:bg'))
         if bg is None:
-            return
+            return False
+        theme_colors = theme.colors
+        bgRef = bg.find(qn('p:bgRef'))
+        if bgRef is not None:
+            try:
+                fill = resolve_bg_ref(bgRef, theme)
+                if fill is None:
+                    return False
+                if fill[0] == 'solid':
+                    _, rgb, alpha = fill
+                    canvas.alpha_composite(Image.new(
+                        'RGBA', (W, H), (*rgb, int(alpha * 255))))
+                elif fill[0] == 'grad':
+                    _, stops, ang = fill
+                    canvas.alpha_composite(_make_linear_gradient(W, H, stops, ang))
+                return True
+            except Exception as e:
+                logger.warning(f"[纯Python渲染] bgRef 背景渲染失败: {e}")
+                return False
         bgPr = bg.find(qn('p:bgPr'))
         if bgPr is None:
-            return  # bgRef 引用母版/主题：预检已告警，保持白底
+            return False
         try:
             solid = bgPr.find(qn('a:solidFill'))
             if solid is not None:
-                rgb, alpha = _parse_color_el(list(solid)[0], theme)
+                rgb, alpha = parse_color_el(list(solid)[0], theme_colors)
                 color_img = Image.new('RGBA', (W, H), (*rgb, int(alpha * 255)))
                 canvas.alpha_composite(color_img)
-                return
+                return True
             grad = bgPr.find(qn('a:gradFill'))
             if grad is not None:
                 lin = grad.find(qn('a:lin'))
@@ -326,22 +302,26 @@ class PillowImageExporter:
                     stops = []
                     for gs in grad.findall(qn('a:gsLst') + '/' + qn('a:gs')):
                         pos = int(gs.get('pos')) / 100000.0
-                        rgb, a = _parse_color_el(list(gs)[0], theme)
+                        rgb, a = parse_color_el(list(gs)[0], theme_colors)
                         stops.append((pos, rgb, a))
                     canvas.alpha_composite(
                         _make_linear_gradient(W, H, stops, int(lin.get('ang')) / 60000.0))
-                return
+                    return True
+                return False
             blipFill = bgPr.find(qn('a:blipFill'))
             if blipFill is not None:
                 blip = blipFill.find(qn('a:blip'))
                 if blip is not None:
                     rId = blip.get(qn('r:embed'))
-                    part = slide.part.related_part(rId)
+                    part = container.part.related_part(rId)
                     import io
                     img = Image.open(io.BytesIO(part.blob)).convert('RGBA')
                     canvas.alpha_composite(img.resize((W, H), Image.LANCZOS))
+                    return True
+            return False
         except Exception as e:
             logger.warning(f"[纯Python渲染] 幻灯片背景渲染失败（保持白底）: {e}")
+            return False
 
     def _draw_picture(self, canvas, shape, scale):
         import io
@@ -352,41 +332,35 @@ class PillowImageExporter:
         canvas.alpha_composite(img, (int(round(shape.left * scale)),
                                      int(round(shape.top * scale))))
 
-    def _draw_text_frame(self, canvas, shape, theme, quality, scale):
+    def _draw_text_frame(self, canvas, shape, resolver, theme_colors, quality, scale):
+        import io
         dpi = 96.0 * quality
 
         def pt2px(v):
             return v * dpi / 72.0
 
         tf = shape.text_frame
-        bodyPr = tf._txBody.find(qn('a:bodyPr'))
-        ins = {'lIns': 91440, 'rIns': 91440, 'tIns': 45720, 'bIns': 45720}
-        for k in ins:
-            if bodyPr is not None and bodyPr.get(k) is not None:
-                ins[k] = int(bodyPr.get(k))
-        ins = {k: v * scale for k, v in ins.items()}
+        bp = resolver.body_props(shape)
+        ins = {k: bp[k] * scale for k in ('lIns', 'rIns', 'tIns', 'bIns')}
 
         box_l = shape.left * scale
         box_t = shape.top * scale
         avail = shape.width * scale - ins['lIns'] - ins['rIns']
 
-        # 1) 展开段落 -> 带样式的 token 序列
+        # 1) 展开段落 -> 带样式的 token 序列（格式经继承链解析）
         paragraphs = []  # (algn, lnSpc_pct, [(token, style)])
         for para in tf.paragraphs:
-            algn = para.alignment
-            algn = {1: 'l', 2: 'ctr', 3: 'r'}.get(algn if algn is None else int(algn), 'l')
-            pPr = para._p.find(qn('a:pPr'))
-            lnSpc = 1.0
-            if pPr is not None:
-                sp = pPr.find(qn('a:lnSpc') + '/' + qn('a:spcPct'))
-                if sp is not None:
-                    lnSpc = int(sp.get('val')) / 100000.0
+            pp = resolver.para_props(shape, para)
+            algn = 'just' if pp['algn'] in ('just', 'justLow') else pp['algn']
+            if algn == 'just':
+                algn = 'l'  # 两端对齐按左对齐渲染（预检已告警）
             toks = []
             for run in para.runs:
-                st = _read_style(run, theme)
+                props = resolver.run_props(shape, para, run)
+                st = _style_from_props(run, props)
                 for tk in _tokenize(run.text):
                     toks.append((tk, st))
-            paragraphs.append((str(algn), lnSpc, toks))
+            paragraphs.append((str(algn), pp['lnSpc_pct'], toks))
 
         # 2) 逐段布局行（与 PoC 校准版一致）
         layers = {}   # style.key() -> [(char, style, x_px, baseline_px)]
@@ -451,7 +425,7 @@ class PillowImageExporter:
                 continue
             if st.shadow:
                 s = st.shadow
-                rgb, alpha = _parse_color_el(s['clr_el'], theme)
+                rgb, alpha = parse_color_el(s['clr_el'], theme_colors)
                 sigma = pt2px(s['blur_pt']) * SHADOW_SIGMA_FRAC
                 sh = mask.filter(ImageFilter.GaussianBlur(sigma))
                 dist = pt2px(s['dist_pt'])
@@ -462,12 +436,26 @@ class PillowImageExporter:
                     sh_img,
                     (int(round(dist * math.cos(th))), int(round(dist * math.sin(th))))
                 )
+            gx0, gy0, gx1, gy1 = bbox
             if st.fill and st.fill[0] == 'grad':
                 _, stops, ang = st.fill
-                gx0, gy0, gx1, gy1 = bbox
                 grad = _make_linear_gradient(gx1 - gx0, gy1 - gy0, stops, ang)
                 tile = Image.new('RGBA', (W, H), (0, 0, 0, 0))
                 tile.paste(grad, (gx0, gy0))
+                tile.putalpha(mask)
+                text_layer.alpha_composite(tile)
+            elif st.fill and st.fill[0] == 'blip':
+                # 图片文字填充：图片拉伸铺满文字包围盒，经文字蒙版合成
+                _, blob, rect = st.fill
+                img = Image.open(io.BytesIO(blob)).convert('RGBA')
+                if rect:
+                    w0, h0 = img.size
+                    img = img.crop((
+                        int(w0 * rect.get('l', 0)), int(h0 * rect.get('t', 0)),
+                        int(w0 * (1 - rect.get('r', 0))), int(h0 * (1 - rect.get('b', 0)))))
+                img = img.resize((max(1, gx1 - gx0), max(1, gy1 - gy0)), Image.LANCZOS)
+                tile = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+                tile.paste(img, (gx0, gy0))
                 tile.putalpha(mask)
                 text_layer.alpha_composite(tile)
             else:

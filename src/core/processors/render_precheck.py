@@ -43,12 +43,20 @@
 
 import logging
 import re
-import zipfile
 from dataclasses import dataclass
 from typing import List, Optional, Set
 
 from pptx import Presentation
 from pptx.oxml.ns import qn
+
+try:
+    from src.core.processors.format_inheritance import (
+        FormatResolver, load_theme, resolve_bg_ref,
+    )
+except ImportError:
+    from core.processors.format_inheritance import (
+        FormatResolver, load_theme, resolve_bg_ref,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -62,32 +70,6 @@ class PrecheckIssue:
     message: str    # 人类可读说明
 
 
-def _load_theme_fonts(pptx_path: str) -> dict:
-    """解析 theme 的 fontScheme，解析 +mn-lt/+mn-ea/+mj-lt/+mj-ea 引用"""
-    fonts = {'+mn-lt': '', '+mn-ea': '', '+mj-lt': '', '+mj-ea': ''}
-    try:
-        with zipfile.ZipFile(pptx_path) as z:
-            names = [n for n in z.namelist() if re.match(r'ppt/theme/theme\d+\.xml$', n)]
-            if not names:
-                return fonts
-            xml = z.read(sorted(names)[0]).decode('utf-8', errors='ignore')
-        m = re.search(r'<a:minorFont>(.*?)</a:minorFont>', xml, re.S)
-        if m:
-            mm = re.search(r'<a:latin typeface="([^"]*)"', m.group(1))
-            fonts['+mn-lt'] = mm.group(1) if mm else ''
-            mm = re.search(r'<a:ea typeface="([^"]*)"', m.group(1))
-            fonts['+mn-ea'] = mm.group(1) if mm else ''
-        m = re.search(r'<a:majorFont>(.*?)</a:majorFont>', xml, re.S)
-        if m:
-            mm = re.search(r'<a:latin typeface="([^"]*)"', m.group(1))
-            fonts['+mj-lt'] = mm.group(1) if mm else ''
-            mm = re.search(r'<a:ea typeface="([^"]*)"', m.group(1))
-            fonts['+mj-ea'] = mm.group(1) if mm else ''
-    except Exception as e:
-        logger.debug(f"解析主题字体失败: {e}")
-    return fonts
-
-
 class RenderPrecheck:
     """PPTX 渲染预检器（白名单制）"""
 
@@ -97,41 +79,52 @@ class RenderPrecheck:
             installed_fonts: 系统已安装字体名集合（小写）。None 表示跳过字体检查。
         """
         self.installed_fonts = installed_fonts
-        self.theme_fonts = {}
 
     # ---------------- 入口 ----------------
 
     def check_pptx(self, pptx_path: str) -> List[PrecheckIssue]:
         """扫描整个 PPTX，返回问题清单（空列表 = 完全可渲染）"""
         prs = Presentation(pptx_path)
-        self.theme_fonts = _load_theme_fonts(pptx_path)
+        theme = load_theme(pptx_path)
+        self.theme = theme
         issues = []
         for idx, slide in enumerate(prs.slides, 1):
-            issues.extend(self._check_slide(slide, idx))
+            resolver = FormatResolver(slide, theme.colors, theme.fonts)
+            issues.extend(self._check_slide(slide, idx, resolver))
         return issues
 
     # ---------------- 幻灯片级 ----------------
 
-    def _check_slide(self, slide, idx: int) -> List[PrecheckIssue]:
+    def _check_slide(self, slide, idx: int, resolver) -> List[PrecheckIssue]:
         issues = []
-        bg = slide._element.find(qn('p:cSld') + '/' + qn('p:bg'))
+        # 背景继承链：slide -> layout -> master，任一层有显式 bgPr 即可
+        containers = (slide, slide.slide_layout, slide.slide_layout.slide_master)
+        bgs = [c._element.find(qn('p:cSld') + '/' + qn('p:bg'))
+               for c in containers]
+        bg = next((b for b in bgs if b is not None), None)
         if bg is not None:
-            if bg.find(qn('p:bgPr')) is None:
-                issues.append(PrecheckIssue(
-                    idx, '(幻灯片背景)', 'BG_REF',
-                    '背景通过 bgRef 引用母版/主题，仅支持显式 bgPr 背景填充'))
+            bgRef = bg.find(qn('p:bgRef'))
+            if bgRef is not None:
+                if resolve_bg_ref(bgRef, getattr(self, 'theme', None)) is None:
+                    issues.append(PrecheckIssue(
+                        idx, '(幻灯片背景)', 'BG_REF',
+                        'bgRef 引用的主题背景样式无法解析，将沿继承链回退'))
             else:
                 bgPr = bg.find(qn('p:bgPr'))
-                if bgPr.find(qn('a:pattFill')) is not None:
+                if bgPr is not None and bgPr.find(qn('a:pattFill')) is not None:
                     issues.append(PrecheckIssue(
                         idx, '(幻灯片背景)', 'BG_PATTERN', '背景图案填充不支持'))
         for shape in slide.shapes:
-            issues.extend(self._check_shape(shape, idx))
+            issues.extend(self._check_shape(shape, idx, resolver))
+        if resolver.unresolved:
+            issues.append(PrecheckIssue(
+                idx, '(格式继承)', 'INHERIT_UNRESOLVED',
+                '格式继承链存在无法解析的构造，对应文字可能退化为默认样式'))
         return issues
 
     # ---------------- 形状级 ----------------
 
-    def _check_shape(self, shape, idx: int) -> List[PrecheckIssue]:
+    def _check_shape(self, shape, idx: int, resolver) -> List[PrecheckIssue]:
         el = shape._element
         name = getattr(shape, 'name', '') or '(未命名)'
         tag = el.tag.split('}')[-1]
@@ -160,7 +153,7 @@ class RenderPrecheck:
             return issues
 
         if tag == 'sp':
-            issues.extend(self._check_sp(el, shape, idx, name))
+            issues.extend(self._check_sp(el, shape, idx, name, resolver))
         else:
             issues.append(PrecheckIssue(idx, name, 'SHAPE_GEOM', f'未知形状类型 {tag}'))
         return issues
@@ -191,7 +184,7 @@ class RenderPrecheck:
                                             '图片效果(alphaModFix/duotone等)不会应用'))
         return issues
 
-    def _check_sp(self, el, shape, idx, name):
+    def _check_sp(self, el, shape, idx, name, resolver):
         issues = []
         spPr = el.find(qn('p:spPr'))
         has_text = shape.has_text_frame
@@ -221,21 +214,25 @@ class RenderPrecheck:
                 issues.append(PrecheckIssue(idx, name, 'SHAPE_LINE', '形状描边不会渲染'))
 
         if has_text:
-            issues.extend(self._check_text_frame(shape, idx, name))
+            issues.extend(self._check_text_frame(shape, idx, name, resolver))
         return issues
 
     # ---------------- 文本框级 ----------------
 
-    def _check_text_frame(self, shape, idx, name):
+    def _check_text_frame(self, shape, idx, name, resolver):
         issues = []
         tf = shape.text_frame
         bodyPr = tf._txBody.find(qn('a:bodyPr'))
 
+        # 垂直对齐/换行走继承解析后的有效值
+        bp = resolver.body_props(shape)
+        if bp['anchor'] not in ('t',):
+            issues.append(PrecheckIssue(
+                idx, name, 'ANCHOR', f'垂直对齐 anchor={bp["anchor"]}（当前仅支持顶端 t）'))
+        if bp['wrap'] == 'none':
+            issues.append(PrecheckIssue(idx, name, 'NO_WRAP', '禁止自动换行(wrap=none)不支持'))
+
         if bodyPr is not None:
-            anchor = bodyPr.get('anchor')
-            if anchor not in (None, 't'):
-                issues.append(PrecheckIssue(
-                    idx, name, 'ANCHOR', f'垂直对齐 anchor={anchor}（当前仅支持顶端 t）'))
             autofit = bodyPr.find(qn('a:normAutofit'))
             if autofit is not None and (autofit.get('fontScale') or autofit.get('lnSpcReduction')):
                 issues.append(PrecheckIssue(
@@ -244,8 +241,6 @@ class RenderPrecheck:
             if bodyPr.get('vert') not in (None, 'horz'):
                 issues.append(PrecheckIssue(idx, name, 'VERT_TEXT',
                                             f'竖排文字 vert={bodyPr.get("vert")} 不支持'))
-            if bodyPr.get('wrap') == 'none':
-                issues.append(PrecheckIssue(idx, name, 'NO_WRAP', '禁止自动换行(wrap=none)不支持'))
             if bodyPr.find(qn('a:prstTxWarp')) is not None:
                 issues.append(PrecheckIssue(idx, name, 'WORDART', '艺术字变形不支持'))
 
@@ -263,28 +258,29 @@ class RenderPrecheck:
                     issues.append(PrecheckIssue(idx, name, 'ALIGN_JUST', '两端对齐按左对齐渲染'))
             for run in para.runs:
                 if run.text:
-                    issues.extend(self._check_run(run, idx, name))
-
-        if not any(True for para in tf.paragraphs for run in para.runs if run.text):
-            pass  # 空文本框无需检查
+                    issues.extend(self._check_run(run, para, shape, idx, name, resolver))
         return issues
 
-    def _check_run(self, run, idx, name):
+    def _check_run(self, run, para, shape, idx, name, resolver):
         issues = []
         rPr = run._r.find(qn('a:rPr'))
-        if rPr is None:
-            issues.append(PrecheckIssue(
-                idx, name, 'INHERIT_RPR',
-                '文字未书写任何格式属性，格式完全依赖继承，将按默认样式(黑 18pt)渲染'))
-            return issues
+        if rPr is not None:
+            issues.extend(self._check_run_explicit(rPr, idx, name))
 
-        if rPr.find(qn('a:solidFill')) is None and rPr.find(qn('a:gradFill')) is None:
-            issues.append(PrecheckIssue(
-                idx, name, 'INHERIT_COLOR', '文字未显式指定颜色/渐变，颜色依赖继承（将渲染为黑色）'))
-        if rPr.get('sz') is None:
-            issues.append(PrecheckIssue(
-                idx, name, 'INHERIT_SIZE', '文字未显式指定字号，字号依赖继承（将渲染为 18pt）'))
+        # 字体检查走继承解析后的有效字体（+mn/+mj 主题引用已展开）
+        props = resolver.run_props(shape, para, run)
+        if props['typeface'] and self.installed_fonts is not None:
+            tfn = props['typeface'].lower()
+            if not (tfn in self.installed_fonts or
+                    any(tfn in f for f in self.installed_fonts)):
+                issues.append(PrecheckIssue(
+                    idx, name, 'FONT_MISSING',
+                    f'字体 {props["typeface"]!r} 未安装，将回退微软雅黑'
+                    f'（与 PowerPoint 替换结果可能不同）'))
+        return issues
 
+    def _check_run_explicit(self, rPr, idx, name):
+        issues = []
         grad = rPr.find(qn('a:gradFill'))
         if grad is not None and grad.find(qn('a:lin')) is None:
             issues.append(PrecheckIssue(idx, name, 'GRAD_PATH', '路径渐变仅支持线性(lin)'))
@@ -294,20 +290,4 @@ class RenderPrecheck:
             if rPr.find(qn('a:effectLst') + '/' + qn(eff)) is not None:
                 issues.append(PrecheckIssue(idx, name, 'TEXT_EFFECTS', f'文字效果({eff[2:]})不支持'))
                 break
-
-        # 字体检查（latin/ea；sym 跳过）
-        for tag in ('a:ea', 'a:latin'):
-            tf_el = rPr.find(qn(tag))
-            if tf_el is None:
-                continue
-            typeface = tf_el.get('typeface') or ''
-            if not typeface or typeface.startswith('+'):
-                typeface = self.theme_fonts.get(typeface, '')
-            if typeface and self.installed_fonts is not None:
-                tfn = typeface.lower()
-                if not (tfn in self.installed_fonts or
-                        any(tfn in f for f in self.installed_fonts)):
-                    issues.append(PrecheckIssue(
-                        idx, name, 'FONT_MISSING',
-                        f'字体 {typeface!r} 未安装，将回退微软雅黑（与 PowerPoint 替换结果可能不同）'))
         return issues

@@ -170,16 +170,14 @@ def main():
 
     check('ROTATION 被识别', 'ROTATION' in codes)
     check('ANCHOR 被识别', 'ANCHOR' in codes)
-    check('INHERIT_RPR 被识别', 'INHERIT_RPR' in codes)
-    check('INHERIT_SIZE 被识别', 'INHERIT_SIZE' in codes)
     check('TABLE 被识别', 'TABLE' in codes)
     check('GROUP 被识别', 'GROUP' in codes)
     check('AUTOFIT_SCALE 被识别', 'AUTOFIT_SCALE' in codes)
-    inherit_issues = [i for i in issues if i.code in ('INHERIT_RPR', 'INHERIT_COLOR', 'INHERIT_SIZE')]
-    check('继承类问题恰好 2 处（INHERIT_RPR=完全继承, INHERIT_SIZE=只写颜色缺字号）',
-          sorted(i.code for i in inherit_issues) == ['INHERIT_RPR', 'INHERIT_SIZE'])
-    check('干净文本框（TextBox 1，显式格式）无任何继承类问题',
-          not any(i.code.startswith('INHERIT') for i in issues if i.shape == 'TextBox 1'))
+    # 继承解析器接管后：无格式 run 通过母版 otherStyle 解析（18pt 黑），
+    # 与 PowerPoint 行为一致，不再告警
+    check('继承类问题零误报（解析器已支持格式继承）',
+          not any(i.code.startswith('INHERIT') for i in issues))
+    check('无未解析继承链标记', 'INHERIT_UNRESOLVED' not in codes)
 
     print("=" * 60)
     print("(2) 字体检查")
