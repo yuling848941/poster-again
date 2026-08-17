@@ -169,7 +169,7 @@ def main():
     codes = [i.code for i in issues]
 
     check('ROTATION 被识别', 'ROTATION' in codes)
-    check('ANCHOR 被识别', 'ANCHOR' in codes)
+    check('ANCHOR 已支持不再告警', 'ANCHOR' not in codes)
     check('TABLE 被识别', 'TABLE' in codes)
     check('GROUP 被识别', 'GROUP' in codes)
     check('AUTOFIT_SCALE 已支持不再告警', 'AUTOFIT_SCALE' not in codes)

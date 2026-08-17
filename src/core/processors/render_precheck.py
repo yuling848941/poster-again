@@ -17,11 +17,10 @@
   OLE               OLE/嵌入对象
   CONNECTOR         连接线
   PIC_EFFECTS       图片效果(alphaModFix/duotone等)
-  SHAPE_GEOM        非矩形形状几何（文字仍会渲染，形状外观不会）
-  SHAPE_FILL        形状底色填充（不会渲染）
-  SHAPE_EFFECTS     形状效果（阴影等）
-  SHAPE_LINE        形状描边
-  ANCHOR            垂直对齐非顶端
+  SHAPE_GEOM        custGeom 或白名单外 prst（文字仍会渲染，形状外观不会）
+  SHAPE_FILL        形状路径渐变/图案填充
+  SHAPE_EFFECTS     outerShdw 以外的形状效果
+  SHAPE_LINE        形状非纯色/虚线描边
   VERT_TEXT         竖排文字
   NO_WRAP           禁止自动换行
   WORDART           艺术字变形
@@ -37,7 +36,8 @@
 
 已支持（对应问题码已退役）：格式继承（INHERIT_RPR/COLOR/SIZE）、
 normAutofit 缩字（AUTOFIT_SCALE）、文字纯色描边（TEXT_STROKE）、
-图片裁剪 srcRect（PIC_CROP）、bgPr/bgRef 背景、图片文字填充 blipFill。
+图片裁剪 srcRect（PIC_CROP）、bgPr/bgRef 背景、图片文字填充 blipFill、
+18 种预设形状几何 + 纯色/线性渐变/图片形状填充 + outerShdw 形状阴影 + 纯色实线描边。
 """
 
 import logging
@@ -52,10 +52,12 @@ try:
     from src.core.processors.format_inheritance import (
         FormatResolver, load_theme, resolve_bg_ref,
     )
+    from src.core.processors.shape_geometry import SUPPORTED_PRST
 except ImportError:
     from core.processors.format_inheritance import (
         FormatResolver, load_theme, resolve_bg_ref,
     )
+    from core.processors.shape_geometry import SUPPORTED_PRST
 
 logger = logging.getLogger(__name__)
 
@@ -186,29 +188,45 @@ class RenderPrecheck:
         spPr = el.find(qn('p:spPr'))
         has_text = shape.has_text_frame
 
-        # 形状几何/填充/效果/描边（有文字时文字仍会渲染，但形状外观不会）
+        # 形状几何/填充/效果/描边 —— 白名单与 shape_geometry.SUPPORTED_PRST 同源
         if spPr is not None:
             geom = spPr.find(qn('a:prstGeom'))
-            if (geom is not None and geom.get('prst') != 'rect') or \
-                    spPr.find(qn('a:custGeom')) is not None:
-                prst = geom.get('prst') if geom is not None else 'custGeom'
+            if spPr.find(qn('a:custGeom')) is not None:
                 issues.append(PrecheckIssue(
                     idx, name, 'SHAPE_GEOM',
-                    f'非矩形形状几何({prst})不会渲染' + ('，仅渲染其中文字' if has_text else '')))
-            for fill_tag, code, desc in (
-                    ('a:solidFill', 'SHAPE_FILL', '纯色'),
-                    ('a:gradFill', 'SHAPE_FILL', '渐变'),
-                    ('a:blipFill', 'SHAPE_FILL', '图片'),
-                    ('a:pattFill', 'SHAPE_FILL', '图案')):
-                if spPr.find(qn(fill_tag)) is not None:
+                    '自定义几何(custGeom)不会渲染' + ('，仅渲染其中文字' if has_text else '')))
+            elif geom is not None and geom.get('prst') not in SUPPORTED_PRST:
+                issues.append(PrecheckIssue(
+                    idx, name, 'SHAPE_GEOM',
+                    f'形状几何({geom.get("prst")})不在支持列表'
+                    + ('，仅渲染其中文字' if has_text else '')))
+            # 填充：纯色/线性渐变/图片已支持；路径渐变与图案不支持
+            grad = spPr.find(qn('a:gradFill'))
+            if grad is not None and grad.find(qn('a:lin')) is None:
+                issues.append(PrecheckIssue(
+                    idx, name, 'SHAPE_FILL', '形状路径渐变填充不支持'))
+            if spPr.find(qn('a:pattFill')) is not None:
+                issues.append(PrecheckIssue(
+                    idx, name, 'SHAPE_FILL', '形状图案填充不支持'))
+            # 效果：outerShdw 已支持，其余不支持
+            eff = spPr.find(qn('a:effectLst'))
+            if eff is not None and len(eff) > 0 and \
+                    any(et.tag != qn('a:outerShdw') for et in eff):
+                issues.append(PrecheckIssue(
+                    idx, name, 'SHAPE_EFFECTS',
+                    f'形状效果({[et.tag.split("}")[-1] for et in eff if et.tag != qn("a:outerShdw")]})不支持'))
+            # 描边：纯色实线已支持
+            ln = spPr.find(qn('a:ln'))
+            if ln is not None:
+                dash_el = ln.find(qn('a:prstDash'))
+                dashed = dash_el is not None and dash_el.get('val') != 'solid'
+                no_solid = ln.find(qn('a:solidFill')) is None and not dashed
+                if dashed:
                     issues.append(PrecheckIssue(
-                        idx, name, code, f'形状底色({desc}填充)不会渲染'))
-                    break
-            if spPr.find(qn('a:effectLst')) is not None and \
-                    len(spPr.find(qn('a:effectLst'))) > 0:
-                issues.append(PrecheckIssue(idx, name, 'SHAPE_EFFECTS', '形状效果(阴影等)不会渲染'))
-            if spPr.find(qn('a:ln')) is not None:
-                issues.append(PrecheckIssue(idx, name, 'SHAPE_LINE', '形状描边不会渲染'))
+                        idx, name, 'SHAPE_LINE', '形状虚线描边按实线渲染'))
+                elif no_solid and len(ln) > 0:
+                    issues.append(PrecheckIssue(
+                        idx, name, 'SHAPE_LINE', '形状非纯色描边不支持'))
 
         if has_text:
             issues.extend(self._check_text_frame(shape, idx, name, resolver))
@@ -221,11 +239,8 @@ class RenderPrecheck:
         tf = shape.text_frame
         bodyPr = tf._txBody.find(qn('a:bodyPr'))
 
-        # 垂直对齐/换行走继承解析后的有效值
+        # 换行走继承解析后的有效值（anchor ctr/b 已支持）
         bp = resolver.body_props(shape)
-        if bp['anchor'] not in ('t',):
-            issues.append(PrecheckIssue(
-                idx, name, 'ANCHOR', f'垂直对齐 anchor={bp["anchor"]}（当前仅支持顶端 t）'))
         if bp['wrap'] == 'none':
             issues.append(PrecheckIssue(idx, name, 'NO_WRAP', '禁止自动换行(wrap=none)不支持'))
 

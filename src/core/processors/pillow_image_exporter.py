@@ -33,10 +33,12 @@ try:
     from src.core.processors.format_inheritance import (
         FormatResolver, load_theme, parse_color_el, parse_fill, resolve_bg_ref,
     )
+    from src.core.processors.shape_geometry import preset_geometry, draw_path
 except ImportError:
     from core.processors.format_inheritance import (
         FormatResolver, load_theme, parse_color_el, parse_fill, resolve_bg_ref,
     )
+    from core.processors.shape_geometry import preset_geometry, draw_path
 
 logger = logging.getLogger(__name__)
 
@@ -271,8 +273,19 @@ class PillowImageExporter:
         return nvpr is not None and nvpr.find(_qn('p:ph')) is not None
 
     def _draw_shape(self, canvas, shape, resolver, theme_colors, quality, scale):
+        tag = shape._element.tag.split('}')[-1]
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
             self._draw_picture(canvas, shape, scale)
+        elif tag == 'sp':
+            # 形状外观（几何/填充/阴影/描边）先画，文字在其上
+            try:
+                self._draw_autoshape(canvas, shape, theme_colors, quality, scale)
+            except Exception as e:
+                logger.warning(
+                    f"[纯Python渲染] 形状外观渲染失败 name={shape.name!r}: {e}")
+            if shape.has_text_frame:
+                self._draw_text_frame(canvas, shape, resolver, theme_colors,
+                                      quality, scale)
         elif shape.has_text_frame:
             self._draw_text_frame(canvas, shape, resolver, theme_colors,
                                   quality, scale)
@@ -280,6 +293,112 @@ class PillowImageExporter:
             logger.warning(
                 f"[纯Python渲染] 跳过不支持的形状: type={shape.shape_type} "
                 f"name={shape.name!r}（该元素不会出现在输出图片中）")
+
+    def _draw_autoshape(self, canvas, shape, theme_colors, quality, scale):
+        """渲染 sp 形状外观：预设几何 + 填充(纯色/线性渐变/图片) + 外阴影 + 纯色描边"""
+        import io
+        spPr = shape._element.spPr
+        prstGeom = spPr.find(qn('a:prstGeom'))
+        if spPr.find(qn('a:custGeom')) is not None:
+            return  # 不支持自定义几何（预检已告警）
+        prst = prstGeom.get('prst') if prstGeom is not None else None
+        avLst = prstGeom.find(qn('a:avLst')) if prstGeom is not None else None
+        x = shape.left * scale
+        y = shape.top * scale
+        w = shape.width * scale
+        h = shape.height * scale
+        path = preset_geometry(prst, x, y, w, h, avLst)
+        if path is None:
+            return
+
+        dpi = 96.0 * quality
+
+        def pt2px(v):
+            return v * dpi / 72.0
+
+        fill = parse_fill(spPr, theme_colors)
+        ln = spPr.find(qn('a:ln'))
+        line_spec = None
+        if ln is not None:
+            solid = ln.find(qn('a:solidFill'))
+            dash_el = ln.find(qn('a:prstDash'))
+            dash = dash_el.get('val', 'solid') if dash_el is not None else 'solid'
+            if solid is not None and dash == 'solid':
+                w_pt = int(ln.get('w', '9525')) / EMU_PER_PT
+                rgb, alpha = parse_color_el(list(solid)[0], theme_colors)
+                line_spec = (max(1, int(round(pt2px(w_pt)))), rgb, alpha)
+
+        shadow = _parse_shadow(spPr)
+        if fill is None and line_spec is None and shadow is None:
+            return  # 纯文本框：无外观可画
+
+        W, H = canvas.size
+        layer = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+        mask = Image.new('L', (W, H), 0)
+        draw_path(ImageDraw.Draw(mask), path, fill=255)
+
+        # 1) 外阴影（垫底）
+        if shadow:
+            rgb, alpha = parse_color_el(shadow['clr_el'], theme_colors)
+            sigma = pt2px(shadow['blur_pt']) * SHADOW_SIGMA_FRAC
+            sh = mask.filter(ImageFilter.GaussianBlur(sigma))
+            dist = pt2px(shadow['dist_pt'])
+            th = math.radians(shadow['dir_deg'])
+            sh_img = Image.new('RGBA', (W, H), (*rgb, 0))
+            sh_img.putalpha(sh.point(lambda v, a=int(alpha * 255): v * a // 255))
+            layer.alpha_composite(
+                sh_img, (int(round(dist * math.cos(th))),
+                         int(round(dist * math.sin(th)))))
+
+        # 2) 填充
+        if fill:
+            if fill[0] == 'solid':
+                _, rgb, alpha = fill
+                fill_img = Image.new('RGBA', (W, H), (*rgb, 0))
+                fill_img.putalpha(mask.point(
+                    lambda v, a=int(alpha * 255): v * a // 255))
+                layer.alpha_composite(fill_img)
+            elif fill[0] == 'grad':
+                _, stops, ang = fill
+                grad = _make_linear_gradient(max(1, int(round(w))),
+                                             max(1, int(round(h))), stops, ang)
+                tile = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+                tile.paste(grad, (int(round(x)), int(round(y))))
+                tile.putalpha(mask)
+                layer.alpha_composite(tile)
+            elif fill[0] == 'blip':
+                try:
+                    _, rId, src = fill
+                    part = shape.part.related_part(rId)
+                    img = Image.open(io.BytesIO(part.blob)).convert('RGBA')
+                    if src is not None:
+                        w0, h0 = img.size
+                        rect = {k: int(src.get(k, '0')) / 100000.0
+                                for k in ('l', 't', 'r', 'b')}
+                        img = img.crop((
+                            int(w0 * rect.get('l', 0)), int(h0 * rect.get('t', 0)),
+                            int(w0 * (1 - rect.get('r', 0))),
+                            int(h0 * (1 - rect.get('b', 0)))))
+                    img = img.resize((max(1, int(round(w))), max(1, int(round(h)))),
+                                     Image.LANCZOS)
+                    tile = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+                    tile.paste(img, (int(round(x)), int(round(y))))
+                    tile.putalpha(mask)
+                    layer.alpha_composite(tile)
+                except Exception as e:
+                    logger.warning(f"[纯Python渲染] 形状图片填充失败: {e}")
+
+        # 3) 描边（填充之上）
+        if line_spec:
+            lw, rgb, alpha = line_spec
+            line_mask = Image.new('L', (W, H), 0)
+            draw_path(ImageDraw.Draw(line_mask), path, outline=255, width=lw)
+            line_img = Image.new('RGBA', (W, H), (*rgb, 0))
+            line_img.putalpha(line_mask.point(
+                lambda v, a=int(alpha * 255): v * a // 255))
+            layer.alpha_composite(line_img)
+
+        canvas.alpha_composite(layer)
 
     def _draw_slide_background(self, canvas, container, theme, W, H) -> bool:
         """渲染 p:bg 背景（bgPr 显式填充或 bgRef 主题样式引用）。返回是否已渲染"""
