@@ -168,10 +168,10 @@ def main():
     issues = RenderPrecheck(installed_fonts=None).check_pptx(path)
     codes = [i.code for i in issues]
 
-    check('ROTATION 被识别', 'ROTATION' in codes)
+    check('ROTATION 已支持不再告警', 'ROTATION' not in codes)
     check('ANCHOR 已支持不再告警', 'ANCHOR' not in codes)
     check('TABLE 被识别', 'TABLE' in codes)
-    check('GROUP 被识别', 'GROUP' in codes)
+    check('GROUP 已支持不再告警（子形状递归检查）', 'GROUP' not in codes)
     check('AUTOFIT_SCALE 已支持不再告警', 'AUTOFIT_SCALE' not in codes)
     # 继承解析器接管后：无格式 run 通过母版 otherStyle 解析（18pt 黑），
     # 与 PowerPoint 行为一致，不再告警

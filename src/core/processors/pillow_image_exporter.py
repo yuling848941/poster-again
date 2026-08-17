@@ -158,6 +158,38 @@ def _make_linear_gradient(w, h, stops, ang_deg):
     return Image.fromarray(arr, 'RGBA')
 
 
+class _Xform:
+    """像素坐标变换（组合形状嵌套）：canvas = off + p * scale"""
+
+    __slots__ = ('ox', 'oy', 'sx', 'sy')
+
+    def __init__(self, ox=0.0, oy=0.0, sx=1.0, sy=1.0):
+        self.ox, self.oy, self.sx, self.sy = ox, oy, sx, sy
+
+    def mx(self, v):
+        return self.ox + v * self.sx
+
+    def my(self, v):
+        return self.oy + v * self.sy
+
+    @property
+    def s_font(self):
+        """文字统一缩放因子（非等比组合下取均值近似）"""
+        return (self.sx + self.sy) / 2.0
+
+    def child(self, off_px, ext_px, ch_off_px, ch_ext_px):
+        """组合子坐标 -> 画布坐标的复合变换"""
+        kx = (ext_px[0] / ch_ext_px[0]) if ch_ext_px[0] else 1.0
+        ky = (ext_px[1] / ch_ext_px[1]) if ch_ext_px[1] else 1.0
+        nsx, nsy = self.sx * kx, self.sy * ky
+        nox = self.mx(off_px[0]) - nsx * ch_off_px[0]
+        noy = self.my(off_px[1]) - nsy * ch_off_px[1]
+        return _Xform(nox, noy, nsx, nsy)
+
+
+_IDENTITY = _Xform()
+
+
 class PillowImageExporter:
     """纯 Python PPTX -> 图片导出器（替代 COMImageExporter，无需 Office）"""
 
@@ -272,41 +304,137 @@ class PillowImageExporter:
             nvpr = shape._element.find(_qn('p:nvPicPr') + '/' + _qn('p:nvPr'))
         return nvpr is not None and nvpr.find(_qn('p:ph')) is not None
 
-    def _draw_shape(self, canvas, shape, resolver, theme_colors, quality, scale):
+    def _draw_shape(self, canvas, shape, resolver, theme_colors, quality, scale,
+                    xform=None, rot_deg=0.0, flip_h=False, flip_v=False):
+        """渲染单个形状。xform：组合坐标变换；rot/flip：本形状的旋转翻转。
+
+        旋转实现：先在独立图层上正常渲染形状（平移到画布原点），
+        再绕形状中心旋转/翻转后贴回原位。嵌套组合的旋转只作用于组合整体
+        （与 PowerPoint 行为一致：子形状坐标在组合的未旋转坐标系中）。
+        """
+        xform = xform or _IDENTITY
         tag = shape._element.tag.split('}')[-1]
-        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-            self._draw_picture(canvas, shape, scale)
-        elif tag == 'sp':
-            # 形状外观（几何/填充/阴影/描边）先画，文字在其上
+
+        # 本层旋转/翻转信息
+        my_rot, my_fh, my_fv = rot_deg, flip_h, flip_v
+        spPr = shape._element.find(qn('p:spPr'))
+        if tag != 'graphicFrame' and spPr is not None:
+            xfrm = spPr.find(qn('a:xfrm'))
+            if xfrm is not None:
+                if xfrm.get('rot'):
+                    my_rot = my_rot + int(xfrm.get('rot')) / 60000.0
+                my_fh = my_fh or xfrm.get('flipH') == '1'
+                my_fv = my_fv or xfrm.get('flipV') == '1'
+
+        need_transform = bool(my_rot or my_fh or my_fv)
+        target = canvas
+        transform_ctx = None
+        if need_transform:
+            # 形状在独立图层上按原位渲染，稍后绕自身中心旋转/翻转后贴回
+            target = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
+            transform_ctx = (
+                my_rot, my_fh, my_fv,
+                xform.mx(shape.left * scale), xform.my(shape.top * scale),
+                xform.mx((shape.left + shape.width) * scale),
+                xform.my((shape.top + shape.height) * scale),
+            )
+
+        if tag == 'grpSp':
             try:
-                self._draw_autoshape(canvas, shape, theme_colors, quality, scale)
+                self._draw_group(target, shape, resolver, theme_colors,
+                                 quality, scale, xform)
+            except Exception as e:
+                logger.warning(f"[纯Python渲染] 组合渲染失败 name={shape.name!r}: {e}")
+        elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+            self._draw_picture(target, shape, scale, xform)
+        elif tag == 'sp':
+            try:
+                self._draw_autoshape(target, shape, theme_colors, quality,
+                                     scale, xform)
             except Exception as e:
                 logger.warning(
                     f"[纯Python渲染] 形状外观渲染失败 name={shape.name!r}: {e}")
             if shape.has_text_frame:
-                self._draw_text_frame(canvas, shape, resolver, theme_colors,
-                                      quality, scale)
+                self._draw_text_frame(target, shape, resolver, theme_colors,
+                                      quality, scale, xform)
         elif shape.has_text_frame:
-            self._draw_text_frame(canvas, shape, resolver, theme_colors,
-                                  quality, scale)
+            self._draw_text_frame(target, shape, resolver, theme_colors,
+                                  quality, scale, xform)
         else:
             logger.warning(
                 f"[纯Python渲染] 跳过不支持的形状: type={shape.shape_type} "
                 f"name={shape.name!r}（该元素不会出现在输出图片中）")
+            return
 
-    def _draw_autoshape(self, canvas, shape, theme_colors, quality, scale):
+        if transform_ctx:
+            r, fh, fv, x0, y0, x1, y1 = transform_ctx
+            layer = target
+            W, H = layer.size
+            # 先翻转（PowerPoint 顺序：flip 后 rot）：裁剪盒必须关于形状中心
+            # 对称，镜像后才不会移位（画布边缘裁剪属正常行为）
+            if fh or fv:
+                m = 80  # 覆盖阴影/描边溢出的边距
+                ccx, ccy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+                hw = max((x1 - x0) / 2.0, m)
+                hh = max((y1 - y0) / 2.0, m)
+                box = (max(0, int(ccx - hw)), max(0, int(ccy - hh)),
+                       min(W, int(ccx + hw)), min(H, int(ccy + hh)))
+                if box[2] > box[0] and box[3] > box[1]:
+                    crop = layer.crop(box).transpose(
+                        Image.FLIP_LEFT_RIGHT if fh else Image.FLIP_TOP_BOTTOM)
+                    layer.paste(crop, (box[0], box[1]))
+            if r:
+                cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+                layer = layer.rotate(-r, resample=Image.BICUBIC,
+                                     center=(cx, cy), fillcolor=(0, 0, 0, 0))
+            canvas.alpha_composite(layer)
+
+    def _draw_group(self, target, group, resolver, theme_colors,
+                    quality, scale, xform):
+        """递归渲染组合。子形状坐标系：off + (child - chOff) * (ext/chExt)"""
+        spPr = group._element.find(qn('p:grpSpPr'))
+        xfrm = spPr.find(qn('a:xfrm')) if spPr is not None else None
+        if xfrm is None:
+            return
+        off = xfrm.find(qn('a:off'))
+        ext = xfrm.find(qn('a:ext'))
+        chOff = xfrm.find(qn('a:chOff'))
+        chExt = xfrm.find(qn('a:chExt'))
+        if off is None or ext is None:
+            return
+        off_px = (int(off.get('x')) * scale, int(off.get('y')) * scale)
+        ext_px = (int(ext.get('cx')) * scale, int(ext.get('cy')) * scale)
+        ch_off = ((int(chOff.get('x')) * scale, int(chOff.get('y')) * scale)
+                  if chOff is not None else off_px)
+        ch_ext = ((int(chExt.get('cx')) * scale, int(chExt.get('cy')) * scale)
+                  if chExt is not None else ext_px)
+        child_xf = xform.child(off_px, ext_px, ch_off, ch_ext)
+
+        text_scale = child_xf.s_font
+        if abs(text_scale - 1.0) > 0.02:
+            logger.info(
+                f"[纯Python渲染] 组合 {group.name!r} 带缩放({child_xf.sx:.2f}x"
+                f"{child_xf.sy:.2f})，其中文字按 {text_scale:.2f} 缩放渲染")
+
+        for sub in group.shapes:
+            self._draw_shape(target, sub, resolver, theme_colors, quality,
+                             scale, xform=child_xf)
+
+    def _draw_autoshape(self, canvas, shape, theme_colors, quality, scale,
+                        xform=None):
         """渲染 sp 形状外观：预设几何 + 填充(纯色/线性渐变/图片) + 外阴影 + 纯色描边"""
         import io
+        xform = xform or _IDENTITY
         spPr = shape._element.spPr
         prstGeom = spPr.find(qn('a:prstGeom'))
         if spPr.find(qn('a:custGeom')) is not None:
             return  # 不支持自定义几何（预检已告警）
         prst = prstGeom.get('prst') if prstGeom is not None else None
         avLst = prstGeom.find(qn('a:avLst')) if prstGeom is not None else None
-        x = shape.left * scale
-        y = shape.top * scale
-        w = shape.width * scale
-        h = shape.height * scale
+        x = xform.mx(shape.left * scale)
+        y = xform.my(shape.top * scale)
+        w = shape.width * scale * xform.sx
+        h = shape.height * scale * xform.sy
         path = preset_geometry(prst, x, y, w, h, avLst)
         if path is None:
             return
@@ -461,8 +589,9 @@ class PillowImageExporter:
             logger.warning(f"[纯Python渲染] 幻灯片背景渲染失败（保持白底）: {e}")
             return False
 
-    def _draw_picture(self, canvas, shape, scale):
+    def _draw_picture(self, canvas, shape, scale, xform=None):
         import io
+        xform = xform or _IDENTITY
         img = Image.open(io.BytesIO(shape.image.blob)).convert('RGBA')
         # srcRect 裁剪：l/t/r/b 为源图百分比（1/100000 单位）
         blipFill = shape._element.find(qn('p:blipFill'))
@@ -476,14 +605,16 @@ class PillowImageExporter:
                 b = int(src.get('b', '0')) / 100000.0
                 img = img.crop((int(w0 * l), int(h0 * t),
                                 int(w0 * (1 - r)), int(h0 * (1 - b))))
-        w = max(1, int(round(shape.width * scale)))
-        h = max(1, int(round(shape.height * scale)))
+        w = max(1, int(round(shape.width * scale * xform.sx)))
+        h = max(1, int(round(shape.height * scale * xform.sy)))
         img = img.resize((w, h), Image.LANCZOS)
-        canvas.alpha_composite(img, (int(round(shape.left * scale)),
-                                     int(round(shape.top * scale))))
+        canvas.alpha_composite(img, (int(round(xform.mx(shape.left * scale))),
+                                     int(round(xform.my(shape.top * scale)))))
 
-    def _draw_text_frame(self, canvas, shape, resolver, theme_colors, quality, scale):
+    def _draw_text_frame(self, canvas, shape, resolver, theme_colors, quality, scale,
+                         xform=None):
         import io
+        xform = xform or _IDENTITY
         dpi = 96.0 * quality
 
         def pt2px(v):
@@ -491,14 +622,16 @@ class PillowImageExporter:
 
         tf = shape.text_frame
         bp = resolver.body_props(shape)
-        ins = {k: bp[k] * scale for k in ('lIns', 'rIns', 'tIns', 'bIns')}
+        ins = {k: bp[k] * scale * (xform.sx if k in ('lIns', 'rIns') else xform.sy)
+               for k in ('lIns', 'rIns', 'tIns', 'bIns')}
 
-        box_l = shape.left * scale
-        box_t = shape.top * scale
-        avail = shape.width * scale - ins['lIns'] - ins['rIns']
+        box_l = xform.mx(shape.left * scale)
+        box_t = xform.my(shape.top * scale)
+        avail = shape.width * scale * xform.sx - ins['lIns'] - ins['rIns']
+        box_h_px = shape.height * scale * xform.sy
 
         # 1) 展开段落 -> 带样式的 token 序列（格式经继承链解析，应用 normAutofit 缩放）
-        font_scale = bp.get('font_scale', 1.0)
+        font_scale = bp.get('font_scale', 1.0) * xform.s_font
         paragraphs = []  # (algn, line_h_px, lines[[ (token, style, adv) ]])
         for para in tf.paragraphs:
             pp = resolver.para_props(shape, para)
@@ -537,7 +670,7 @@ class PillowImageExporter:
 
         # 2) anchor 垂直定位（两遍布局：文本块总高 = Σ 行高）
         total_h = sum(len(lines) * line_h for _, line_h, lines in paragraphs)
-        content_h = shape.height * scale - ins['tIns'] - ins['bIns']
+        content_h = box_h_px - ins['tIns'] - ins['bIns']
         if bp['anchor'] == 'ctr':
             y_off = max(0.0, (content_h - total_h) / 2.0)
         elif bp['anchor'] in ('b', 'just'):

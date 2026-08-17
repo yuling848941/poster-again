@@ -9,8 +9,7 @@
 必须同步更新本模块的检查项。
 
 问题码一览：
-  ROTATION          形状旋转/翻转
-  GROUP             组合形状
+  GRP_TEXT_SCALE    组合非等比缩放，文字按平均比例近似
   TABLE             表格
   CHART             图表
   SMARTART          SmartArt
@@ -34,7 +33,8 @@
   BG_REF            bgRef 主题背景样式无法解析
   BG_PATTERN        背景图案填充
 
-已支持（对应问题码已退役）：格式继承（INHERIT_RPR/COLOR/SIZE）、
+已支持（对应问题码已退役）：形状旋转/翻转（ROTATION）、组合形状递归（GROUP）、
+格式继承（INHERIT_RPR/COLOR/SIZE）、
 normAutofit 缩字（AUTOFIT_SCALE）、文字纯色描边（TEXT_STROKE）、
 图片裁剪 srcRect（PIC_CROP）、bgPr/bgRef 背景、图片文字填充 blipFill、
 18 种预设形状几何 + 纯色/线性渐变/图片形状填充 + outerShdw 形状阴影 + 纯色实线描边。
@@ -131,16 +131,9 @@ class RenderPrecheck:
         tag = el.tag.split('}')[-1]
         issues = []
 
-        # 旋转/翻转
-        xfrm = el.find(qn('p:spPr') + '/' + qn('a:xfrm')) if tag != 'graphicFrame' else None
-        if xfrm is not None and (int(xfrm.get('rot', '0')) or xfrm.get('flipH') or xfrm.get('flipV')):
-            issues.append(PrecheckIssue(
-                idx, name, 'ROTATION', f'形状旋转/翻转（rot={xfrm.get("rot")}, '
-                f'flipH={xfrm.get("flipH")}, flipV={xfrm.get("flipV")}）不会渲染'))
-
-        # 组合/连接线/嵌入框架
+        # 组合/连接线/嵌入框架（旋转/翻转已支持）
         if tag == 'grpSp':
-            issues.append(PrecheckIssue(idx, name, 'GROUP', '组合形状整体不会渲染'))
+            issues.extend(self._check_group(shape, idx, name, resolver))
             return issues
         if tag == 'cxnSp':
             issues.append(PrecheckIssue(idx, name, 'CONNECTOR', '连接线不会渲染'))
@@ -157,6 +150,27 @@ class RenderPrecheck:
             issues.extend(self._check_sp(el, shape, idx, name, resolver))
         else:
             issues.append(PrecheckIssue(idx, name, 'SHAPE_GEOM', f'未知形状类型 {tag}'))
+        return issues
+
+    def _check_group(self, group, idx, name, resolver):
+        issues = []
+        spPr = group._element.find(qn('p:grpSpPr'))
+        xfrm = spPr.find(qn('a:xfrm')) if spPr is not None else None
+        if xfrm is not None:
+            ext = xfrm.find(qn('a:ext'))
+            chExt = xfrm.find(qn('a:chExt'))
+            if ext is not None and chExt is not None:
+                try:
+                    kx = int(ext.get('cx')) / max(1, int(chExt.get('cx')))
+                    ky = int(ext.get('cy')) / max(1, int(chExt.get('cy')))
+                    if abs(kx - ky) > 0.02:
+                        issues.append(PrecheckIssue(
+                            idx, name, 'GRP_TEXT_SCALE',
+                            f'组合非等比缩放({kx:.2f}x{ky:.2f})，其中文字按平均比例近似'))
+                except (ValueError, ZeroDivisionError):
+                    pass
+        for sub in group.shapes:
+            issues.extend(self._check_shape(sub, idx, resolver))
         return issues
 
     def _check_graphic_frame(self, el, idx, name):
