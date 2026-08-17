@@ -164,8 +164,8 @@ class COMImageExporter:
                         # 复用的用户实例：只释放 COM 引用，绝不 Quit
                         try:
                             del powerpoint
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"释放 COM 引用失败: {e}")
 
         except Exception as e:
             logger.error(f"使用 Microsoft Office 导出图片时出错：{e}")
@@ -237,13 +237,13 @@ class COMImageExporter:
                 if presentation is not None:
                     try:
                         del presentation
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"释放 COM 引用失败: {e}")
                 if wps is not None:
                     try:
                         del wps
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"释放 COM 引用失败: {e}")
 
         except Exception as e:
             logger.error(f"使用 WPS Office 导出图片时出错：{e}")

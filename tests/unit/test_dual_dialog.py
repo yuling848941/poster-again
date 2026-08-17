@@ -1,29 +1,50 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-测试双弹框现象 - 使用用户指定的真实文件
+测试双弹框现象（配置加载后应只弹一次承保趸期输入对话框）
 """
 
-import sys
 import os
+import sys
+import tempfile
+import shutil
 
-# 添加src路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
-from src.gui.simple_config_manager import SimpleConfigManager
 import pandas as pd
+
+# 将项目根目录加入 sys.path，确保 src 包可导入
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, PROJECT_ROOT)
+
+from PySide6.QtWidgets import QApplication, QWidget
+
+from src.gui.simple_config_manager import SimpleConfigManager
+
+
+def _create_test_excel():
+    """生成包含承保趸期计算所需列的自包含测试 Excel（含 1 行 R=1）"""
+    data = pd.DataFrame({
+        "保单号": ["P001", "P002"],
+        "SFYP2(不含短险续保)": [5000, 5000],
+        "首年保费": [10000, 5000],
+        "缴费年期（主险） ID": [20, 5],
+    })
+    # R: 0.5 -> 5年交SFYP；1.0 -> 需用户输入
+    tmp_dir = tempfile.mkdtemp()
+    path = os.path.join(tmp_dir, "ka_test.xlsx")
+    data.to_excel(path, index=False)
+    return tmp_dir, path
+
 
 class TestMainWindow(QWidget):
     """测试用主窗口 - 模拟真实场景"""
-    def __init__(self):
+    def __init__(self, excel_file):
         super().__init__()
         self.text_addition_rules = {}
         self.dundian_mappings = {}
         self.chengbao_mappings = {}
         self.logs = []
         self.dialog_calls = []  # 记录对话框调用
-        self.data_path_edit = MockDataPathEdit("KA承保快报.xlsx")
+        self.data_path_edit = MockDataPathEdit(excel_file)
         self.match_table = MockMatchTableWithPhTest()
         self.worker_thread = MockWorkerThreadWithData()
 
@@ -35,7 +56,6 @@ class TestMainWindow(QWidget):
         self.dialog_count += 1
         self.dialog_calls.append(len(user_input_rows))
 
-        # 记录详细信息
         detail = {
             'dialog_number': self.dialog_count,
             'user_input_rows_count': len(user_input_rows),
@@ -44,7 +64,6 @@ class TestMainWindow(QWidget):
             'chengbao_data_column_exists': '承保趸期数据' in data_reader.data.columns if data_reader.data is not None else False,
         }
 
-        # 检查R=1的行数
         if detail['chengbao_data_column_exists']:
             chengbao_col = data_reader.data['承保趸期数据']
             r1_rows_in_data = []
@@ -67,17 +86,16 @@ class TestMainWindow(QWidget):
 
         print(f"  用户输入行: {user_input_rows}")
 
-        # 模拟用户输入
         if not hasattr(self, 'chengbao_user_inputs'):
             self.chengbao_user_inputs = {}
 
         for row in user_input_rows:
             if row not in self.chengbao_user_inputs:
-                # 模拟用户输入"10"
                 self.chengbao_user_inputs[row] = "10"
                 print(f"    [模拟输入] 行{row} -> 10年交SFYP")
 
         return self.chengbao_user_inputs
+
 
 class MockMatchTableWithPhTest:
     """模拟包含ph_test的占位符表格"""
@@ -87,15 +105,19 @@ class MockMatchTableWithPhTest:
             ["ph_支公司", "支公司"],
             ["ph_test", "测试字段"]  # 对应承保趸期映射
         ]
+
     def rowCount(self):
         return len(self.rows)
+
     def item(self, row, col):
         if 0 <= row < len(self.rows):
             return MockTableItem(self.rows[row][col])
         return None
+
     def setItem(self, row, col, item):
         if 0 <= row < len(self.rows):
-            self.rows[row][col] = item.text
+            self.rows[row][col] = item
+
 
 class MockWorkerThreadWithData:
     """模拟工作线程"""
@@ -106,51 +128,60 @@ class MockWorkerThreadWithData:
     def get_ppt_generator(self):
         return self._ppt_generator
 
+
 class MockPPTGenerator:
     """模拟PPT生成器"""
     def __init__(self):
         self.rules = {}
         self.data = None
+        self.data_reader = MockDataReader()
 
     def add_matching_rule(self, placeholder, column):
         self.rules[placeholder] = column
 
+
+class MockDataReader:
+    """模拟DataReader（用于同步承保趸期数据）"""
+    def __init__(self):
+        self.data = None
+
+
 class MockTableItem:
     def __init__(self, text):
         self._text = text
+
     def text(self):
         return self._text
+
 
 class MockDataPathEdit:
     def __init__(self, path):
         self.path = path
+
     def text(self):
         return self.path
 
+
 def test_dual_dialog():
     """测试双弹框现象"""
-    print("="*70)
+    print("=" * 70)
     print("测试双弹框现象")
-    print("="*70)
+    print("=" * 70)
 
-    config_file = "承保.pptcfg"
-    excel_file = "KA承保快报.xlsx"
-
-    if not os.path.exists(config_file):
-        print(f"\nERROR: 配置文件不存在 - {config_file}")
-        return False
-
-    if not os.path.exists(excel_file):
-        print(f"\nERROR: Excel文件不存在 - {excel_file}")
-        return False
+    tmp_dir, excel_file = _create_test_excel()
+    config_file = os.path.join(PROJECT_ROOT, "承保.pptcfg")
 
     try:
+        if not os.path.exists(config_file):
+            print(f"\nERROR: 配置文件不存在 - {config_file}")
+            return False
+
         # 创建应用
-        app = QApplication(sys.argv)
+        app = QApplication.instance() or QApplication(sys.argv)
 
         # 创建主窗口
         print(f"\n[Step 1] 创建主窗口...")
-        main_window = TestMainWindow()
+        main_window = TestMainWindow(excel_file)
 
         # 创建配置管理器
         print(f"[Step 2] 创建配置管理器...")
@@ -184,27 +215,22 @@ def test_dual_dialog():
             print("[SUCCESS] 只弹了1次对话框！")
         elif main_window.dialog_count == 2:
             print("[INFO] 弹了2次对话框，需要分析原因")
-            if len(main_window.dialog_details) >= 2:
-                first = main_window.dialog_details[0]
-                second = main_window.dialog_details[1]
-                print(f"\n  第1次: 检测到{first['user_input_rows_count']}行")
-                print(f"  第2次: 检测到{second['user_input_rows_count']}行")
-
-                if second['user_input_rows_count'] > first['user_input_rows_count']:
-                    print(f"\n  [问题] 第二次弹框检测到更多行！")
-                    print(f"  可能原因: Excel数据行数从{first['excel_data_shape'][0]}行变为{second['excel_data_shape'][0]}行")
         else:
             print(f"[FAIL] 弹了{main_window.dialog_count}次对话框")
 
         print(f"{'='*70}")
 
-        return success
+        return success and main_window.dialog_count == 1
 
     except Exception as e:
         print(f"\nERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         return False
+
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     success = test_dual_dialog()

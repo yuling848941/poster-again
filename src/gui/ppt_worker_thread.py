@@ -5,11 +5,9 @@ from PySide6.QtCore import QThread, Signal
 try:
     from src.ppt_generator import PPTGenerator
     from src.config import ConfigManager
-    from src.data_reader import DataReader
 except ImportError:
     from ppt_generator import PPTGenerator
     from config_manager import ConfigManager
-    from data_reader import DataReader
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +194,7 @@ class PPTWorkerThread(QThread):
                     ppt_generator.data_reader.data["承保趸期数据"] = saved_chengbao_data
 
             # 计算承保趸期数据（如果需要）
-            data_reader = DataReader()
+            # 注意：直接复用 ppt_generator 的 data_reader，无需新建实例
             try:
                 # 直接从ppt_generator的data_reader获取data
                 # 注意：ppt_generator.load_data会将数据存储在data_reader.data中，而不是ppt_generator.data

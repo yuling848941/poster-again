@@ -7,7 +7,7 @@ import sys
 import os
 
 # 添加src目录到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 def test_final_fix():
     """测试最终修复"""

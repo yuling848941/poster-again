@@ -2,112 +2,59 @@
 # -*- coding: utf-8 -*-
 """
 测试占位符修复
-验证程序能否正确识别PPT中的占位符
+验证 PPTXProcessor（纯 python-pptx）能否正确识别 PPT 中的占位符
 """
 
-import sys
 import os
-import win32com.client
+import sys
+
+# 将项目根目录加入 sys.path，确保 src 包可导入
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, PROJECT_ROOT)
+
 import logging
 
-# 设置日志
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-logger = logging.getLogger(__name__)
+
+from src.core.processors.pptx_processor import PPTXProcessor
+
 
 def test_placeholders(ppt_path):
-    """
-    测试占位符识别
-    """
-    try:
-        print(f"测试文件: {ppt_path}")
-        print("=" * 70)
+    """测试占位符识别"""
+    print(f"测试文件: {ppt_path}")
+    print("=" * 70)
 
-        if not os.path.exists(ppt_path):
-            print("文件不存在!")
-            return False
-
-        # 连接到PowerPoint
-        print("正在连接PowerPoint...")
-        powerpoint_app = win32com.client.Dispatch("PowerPoint.Application")
-        powerpoint_app.Visible = False
-
-        # 加载模板
-        print("加载模板...")
-        presentation = powerpoint_app.Presentations.Open(os.path.abspath(ppt_path))
-
-        print(f"模板已加载，共 {presentation.Slides.Count} 张幻灯片")
-        print("-" * 70)
-
-        # 遍历所有幻灯片和形状
-        total_placeholders = 0
-        found_placeholders = []
-
-        for slide_idx, slide in enumerate(presentation.Slides, 1):
-            # 只显示前5张幻灯片
-            if slide_idx > 5:
-                break
-
-            print(f"\n【幻灯片 {slide_idx}】")
-            slide_placeholders = 0
-
-            for shape in slide.Shapes:
-                shape_name = shape.Name
-
-                if shape_name and shape_name.startswith("ph_"):
-                    slide_placeholders += 1
-                    total_placeholders += 1
-                    found_placeholders.append(shape_name)
-                    print(f"  [占位符] {shape_name}")
-                elif shape_name:
-                    print(f"  [形状] {shape_name}")
-
-            if slide_placeholders == 0:
-                print("  (无占位符)")
-
-        # 关闭PowerPoint
-        presentation.Close()
-        powerpoint_app.Quit()
-
-        print("\n" + "=" * 70)
-        print("测试结果")
-        print("=" * 70)
-        print(f"总占位符数量: {total_placeholders}")
-
-        if found_placeholders:
-            print("\n找到的占位符:")
-            for i, ph in enumerate(found_placeholders, 1):
-                print(f"  {i}. {ph}")
-
-            print("\n" + "=" * 70)
-            print("SUCCESS: 程序可以正确识别占位符!")
-            print("=" * 70)
-            print("\n建议:")
-            print("1. 保存此PPT模板")
-            print("2. 在程序中重新加载模板")
-            print("3. 运行自动匹配测试")
-            return True
-        else:
-            print("\nFAIL: 未找到占位符")
-            return False
-
-    except Exception as e:
-        print(f"\n错误: {e}")
-        import traceback
-        traceback.print_exc()
+    if not os.path.exists(ppt_path):
+        print("文件不存在!")
         return False
 
-if __name__ == "__main__":
-    ppt_path = input("请输入PPT文件路径: ").strip()
+    processor = PPTXProcessor()
+    try:
+        if not processor.load_template(ppt_path):
+            print("加载模板失败")
+            return False
 
-    if not ppt_path:
-        ppt_path = "E:/poster code/poster-again/10月承保贺报(4).pptx"
-        print(f"使用默认路径: {ppt_path}")
+        placeholders = processor.find_placeholders()
+        print(f"共找到 {len(placeholders)} 个占位符")
+        for i, ph in enumerate(placeholders, 1):
+            print(f"  {i}. {ph}")
+
+        return len(placeholders) > 0
+
+    finally:
+        processor.close()
+
+
+if __name__ == "__main__":
+    # 使用仓库内实际存在的模板，避免交互式 input()
+    candidates = [
+        os.path.join(PROJECT_ROOT, "10月递交贺报(3).pptx"),
+        os.path.join(PROJECT_ROOT, "10月承保贺报(3).pptx"),
+        os.path.join(PROJECT_ROOT, "01、每日贺报 - 发2 .pptx"),
+    ]
+    ppt_path = next((p for p in candidates if os.path.exists(p)), candidates[0])
+    print(f"使用模板: {ppt_path}")
 
     success = test_placeholders(ppt_path)
-
-    if success:
-        print("\n✓ 占位符识别正常")
-        print("您现在可以在程序中正常使用这个模板了！")
-    else:
-        print("\n✗ 占位符识别失败")
-        print("请检查模板中的占位符设置")
+    print("\nOK 占位符识别正常" if success else "\nX 占位符识别失败")
+    sys.exit(0 if success else 1)

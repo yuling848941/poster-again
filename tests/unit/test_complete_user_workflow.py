@@ -10,7 +10,7 @@ import tempfile
 import json
 
 # 添加src目录到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 def test_complete_workflow():
     """测试完整用户工作流程"""

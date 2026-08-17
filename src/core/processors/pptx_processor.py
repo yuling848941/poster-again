@@ -143,10 +143,10 @@ class PPTXProcessor(ITemplateProcessor):
         for shape in shapes:
             yield shape
 
-            # 如果是组合形状，递归遍历其子形状
+            # 如果是组合形状，递归遍历其子形状（支持嵌套组合）
             if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
                 try:
-                    for subshape in shape.shapes:
+                    for subshape in self._iterate_all_shapes(shape.shapes):
                         yield subshape
                 except Exception as e:
                     logger.debug(f"遍历组合形状失败：{e}")
@@ -493,9 +493,14 @@ class PPTXProcessor(ITemplateProcessor):
         Returns:
             Dict: 应用程序信息
         """
+        try:
+            import pptx
+            version = getattr(pptx, '__version__', 'unknown')
+        except Exception:
+            version = 'unknown'
         return {
             'name': 'python-pptx',
-            'version': '0.6.21+',
+            'version': version,
             'type': 'pure_python',
             'description': '纯 Python PPT 处理库，无需 Microsoft Office 或 WPS'
         }
@@ -505,34 +510,27 @@ class PPTXProcessor(ITemplateProcessor):
         """
         导出演示文稿为图片
 
-        使用 Microsoft Office 或 WPS Office 导出，需要安装 Office 套件
+        使用纯 Python 渲染引擎（Pillow），无需 Microsoft Office / WPS Office。
+        （COM 导出路径已在纯 Python 分支中暂时禁用）
 
         Args:
             output_dir: 输出目录
-            format: 图片格式 (JPG, PNG)，默认 JPG（Office 兼容性更好）
-            quality: 图片质量/分辨率 (1.0-4.0)
+            format: 图片格式 (JPG, PNG)，默认 JPG
+            quality: 图片质量/分辨率缩放倍数 (1.0-4.0)
             base_filename: 基础文件名（不含扩展名），用于重命名生成的图片
 
         Returns:
             list: 生成的图片路径列表
-
-        Raises:
-            RuntimeError: 如果未安装 Office 套件
         """
         try:
             try:
-                from src.core.processors.com_image_exporter import COMImageExporter
+                from src.core.processors.pillow_image_exporter import PillowImageExporter
             except ImportError:
-                from core.processors.com_image_exporter import COMImageExporter
+                from core.processors.pillow_image_exporter import PillowImageExporter
 
-            exporter = COMImageExporter()
-            if not exporter.is_available():
-                raise RuntimeError(
-                    "未检测到 Microsoft Office 或 WPS Office，无法导出图片。\n"
-                    "请安装 Office 套件后重试。"
-                )
+            exporter = PillowImageExporter()
 
-            logger.info(f"使用 {exporter.get_office_info()} 导出图片")
+            logger.info(f"使用 {exporter.get_engine_info()} 导出图片")
 
             # 先保存当前演示文稿到临时文件
             # 使用带缓冲的临时文件，确保数据完全写入
@@ -584,7 +582,6 @@ class PPTXProcessor(ITemplateProcessor):
                     os.remove(temp_path)
                 except Exception as e:
                     logger.debug(f"清理临时文件失败：{e}")
-                    pass
 
         except RuntimeError:
             raise

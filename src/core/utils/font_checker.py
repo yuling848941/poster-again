@@ -90,8 +90,8 @@ class FontChecker:
                     except OSError:
                         break
                 winreg.CloseKey(key)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"读取注册表字体失败: {e}")
 
             # 方法 2: 从字体文件目录读取文件名
             if os.path.exists(self.SYSTEM_FONTS_DIR):

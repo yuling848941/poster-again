@@ -69,7 +69,8 @@ The `ph_` prefix is defined in `PPTXProcessor.PLACEHOLDER_PREFIX`. Field names m
 
 ## Testing
 
-- ~49 test files in `tests/unit/`, all standalone scripts
+- 47 test files in `tests/unit/`, all standalone scripts
+- Each test adds the project root to `sys.path` itself (via `os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))`), so they run directly from the repo root: `.venv\Scripts\python.exe tests\unit\test_xxx.py`
 - No test framework config — just `python tests\unit\test_xxx.py`
 - Many tests are historical "fix verification" scripts (e.g. `test_config_sync_fix.py`, `test_placeholder_fix.py`)
 - The most relevant for new work: `test_pptx_processor.py`, `test_complete_workflow.py`, `test_com_processor.py`

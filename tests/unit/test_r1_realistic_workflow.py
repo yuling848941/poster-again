@@ -12,8 +12,8 @@ import tempfile
 from unittest.mock import Mock, MagicMock, patch
 from PySide6.QtWidgets import QApplication
 
-# 添加项目根目录到路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 将项目根目录加入 sys.path，确保 src 包可导入
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 def create_realistic_test_data():
     """创建真实场景的测试数据"""
@@ -113,8 +113,7 @@ def simulate_placeholder_association(mock_main_window):
     # 模拟ppt_generator
     from src.ppt_generator import PPTGenerator
 
-    mock_office_manager = Mock()
-    ppt_generator = PPTGenerator(office_manager=mock_office_manager)
+    ppt_generator = PPTGenerator()
 
     # 模拟加载数据（关键：这里需要数据）
     print("\n[3.1] 模拟ppt_generator加载数据...")
@@ -164,19 +163,19 @@ def simulate_ppt_generation_workflow(excel_file, mock_main_window):
 
     # 模拟加载模板
     print("\n[4.3] 模拟加载模板...")
-    worker_thread.ppt_generator.load_template = Mock(return_value=True)
+    worker_thread.get_ppt_generator().load_template = Mock(return_value=True)
 
     # 模拟加载数据（关键步骤）
     print("\n[4.4] 加载原始Excel数据...")
-    success = worker_thread.ppt_generator.load_data(excel_file)
+    success = worker_thread.get_ppt_generator().load_data(excel_file)
     assert success, "数据加载失败"
 
     # 从data_reader中获取数据
-    print(f"    数据加载成功: {len(worker_thread.ppt_generator.data_reader.data)}行")
+    print(f"    数据加载成功: {len(worker_thread.get_ppt_generator().data_reader.data)}行")
 
     # 检查初始数据
     print("\n[4.5] 检查初始承保趸期数据列...")
-    data = worker_thread.ppt_generator.data_reader.data
+    data = worker_thread.get_ppt_generator().data_reader.data
     if "承保趸期数据" in data.columns:
         initial_data = data["承保趸期数据"].tolist()
         print(f"    初始数据: {initial_data[:3]}...")
@@ -190,7 +189,7 @@ def simulate_ppt_generation_workflow(excel_file, mock_main_window):
     print("\n[4.6] 执行承保趸期数据处理...")
     try:
         # 使用ppt_generator的data_reader
-        data_reader = worker_thread.ppt_generator.data_reader
+        data_reader = worker_thread.get_ppt_generator().data_reader
 
         # 检查承保趸期数据列
         if "承保趸期数据" not in data_reader.data.columns:

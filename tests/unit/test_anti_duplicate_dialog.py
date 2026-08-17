@@ -11,8 +11,8 @@ import json
 import tempfile
 import shutil
 
-# 添加src路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# 将项目根目录加入 sys.path，确保 src 包可导入
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from src.gui.simple_config_manager import SimpleConfigManager
 
@@ -117,7 +117,7 @@ class MockMatchTable:
         return None
     def setItem(self, row, col, item):
         if 0 <= row < len(self.rows):
-            self.rows[row][col] = item.text
+            self.rows[row][col] = item
 
 class MockTableItem:
     def __init__(self, text):
@@ -152,13 +152,23 @@ def test_anti_duplicate_dialog():
     temp_dir = tempfile.mkdtemp()
     config_file = os.path.join(temp_dir, "test_config.pptcfg")
 
+    # 生成包含承保趸期计算所需列的测试 Excel（含 1 行 R=1）
+    import pandas as pd
+    excel_file = os.path.join(temp_dir, "ka_test.xlsx")
+    pd.DataFrame({
+        "保单号": ["A001", "A002", "A003"],
+        "SFYP2(不含短险续保)": [5000, 5000, 1000],
+        "首年保费": [10000, 5000, 10000],
+        "缴费年期（主险） ID": [20, 5, 20],
+    }).to_excel(excel_file, index=False)
+
     try:
         # 创建配置管理器
         config_manager = SimpleConfigManager()
 
         # 创建主窗口并设置承保趸期映射
         print("\n[Setup] 创建主窗口并设置承保趸期映射...")
-        main_window = MockMainWindow()
+        main_window = MockMainWindow(excel_file)
         print(f"    承保趸期映射: {main_window.chengbao_mappings}")
 
         # 保存配置
@@ -171,7 +181,7 @@ def test_anti_duplicate_dialog():
         print("\n[Test 2] 模拟加载配置过程（模拟多次触发）...")
 
         # 创建新主窗口
-        new_window = MockMainWindow()
+        new_window = MockMainWindow(excel_file)
         new_window.chengbao_mappings = {}  # 清空映射
 
         # 加载配置

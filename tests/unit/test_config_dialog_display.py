@@ -10,8 +10,8 @@ import json
 import tempfile
 import shutil
 
-# 添加src路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# 将项目根目录加入 sys.path，确保 src 包可导入
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from src.gui.simple_config_manager import SimpleConfigManager
 
@@ -62,12 +62,15 @@ class MockMatchTable:
 
     def setItem(self, row, col, item):
         if 0 <= row < len(self.rows):
-            self.rows[row][col] = item.text
+            self.rows[row][col] = item
 
 class MockTableItem:
-    """模拟表格项"""
+    """Mock table item（与 QTableWidgetItem 接口一致）"""
     def __init__(self, text):
-        self.text = text
+        self._text = text
+
+    def text(self):
+        return self._text
 
 class MockWorkerThread:
     """模拟工作线程"""

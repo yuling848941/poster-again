@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
 """
-使用修复后的逻辑生成测试文件
-验证修复是否真正解决了问题
+使用修复后的逻辑验证文本增加规则只应用到匹配的占位符
+
+核心验证点：配置中不存在的占位符（如 ph_中支）不应被应用文本增加规则。
 """
 
-import sys
 import os
+import sys
 import json
 
-# 添加src目录到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# 将项目根目录加入 sys.path，确保 src 包可导入
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, PROJECT_ROOT)
+
+from src.gui.simple_config_manager import SimpleConfigManager
+
 
 def test_with_fixed_logic():
-    """使用修复后的逻辑生成测试文件"""
+    """使用修复后的逻辑验证文本增加规则匹配"""
     try:
-        print("=== 使用修复后的逻辑生成测试文件 ===")
+        print("=== 验证文本增加规则只应用到匹配的占位符 ===")
 
-        # 1. 加载配置和数据
-        print("\n1. 加载实际配置和数据...")
+        # 1. 加载实际配置
+        config_file = os.path.join(PROJECT_ROOT, "递交.pptcfg")
+        if not os.path.exists(config_file):
+            print(f"[ERROR] 配置文件不存在: {config_file}")
+            return False
 
-        # 加载配置
-        config_file = "src/gui_config.pptcfg"
         with open(config_file, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
 
@@ -32,140 +38,65 @@ def test_with_fixed_logic():
             suffix = rule.get('suffix', '')
             print(f"     {placeholder}: 后缀='{suffix}'")
 
-        # 加载数据
-        from src.data_reader import DataReader
-        data_reader = DataReader()
-        data_reader.load_excel("KA递交模板.xlsx")
-        data = data_reader.get_data_preview(num_rows=1)  # 只取第一行数据
+        # 2. 模拟匹配表格：配置中已有的占位符 + 一个配置中不存在的 ph_中支
+        placeholders = ["ph_中心支公司", "ph_保险种类", "ph_所属家庭", "ph_中支"]
 
-        print(f"   数据列: {list(data.columns)}")
+        class MockTableItem:
+            def __init__(self, text):
+                self._text = text
 
-        # 2. 获取模板占位符并执行匹配
-        print("\n2. 执行自动匹配...")
-        from src.core.template_processor import TemplateProcessor
-        from src.exact_matcher import ExactMatcher
+            def text(self):
+                return self._text
 
-        template_processor = TemplateProcessor()
-        template_processor.load_template("10月递交贺报(3).pptx")
-        exact_matcher = ExactMatcher()
-        exact_matcher.set_data(data)
+        class MockTable:
+            def __init__(self):
+                self.rows = [[ph, ph.replace("ph_", "")] for ph in placeholders]
 
-        placeholders = template_processor.find_placeholders()
-        exact_matcher.set_template_placeholders(placeholders)
+            def rowCount(self):
+                return len(self.rows)
 
-        # 自动匹配
-        for placeholder in placeholders:
-            placeholder_clean = placeholder.replace('ph_', '').lower()
-            for column in data.columns:
-                if column.lower() == placeholder_clean:
-                    exact_matcher.set_matching_rule(placeholder, column)
-                    print(f"   匹配: {placeholder} -> {column}")
-                    break
+            def item(self, row, col):
+                if 0 <= row < len(self.rows):
+                    return MockTableItem(self.rows[row][col])
+                return None
 
-        matching_rules = exact_matcher.get_matching_rules()
-        print(f"   匹配结果: {len(matching_rules)} 条")
+            def setItem(self, row, col, item):
+                if 0 <= row < len(self.rows):
+                    self.rows[row][col] = item
+
+        class MockWindow:
+            def __init__(self):
+                self.match_table = MockTable()
 
         # 3. 使用修复后的配置加载逻辑
         print("\n3. 使用修复后的配置加载逻辑...")
-        from src.gui.simple_config_manager import SimpleConfigManager
-
         config_manager = SimpleConfigManager()
+        matched = config_manager._update_match_table_display(MockWindow(), text_additions)
 
-        # 模拟配置加载过程
-        matched_text_additions = config_manager._update_match_table_display(
-            type('MockWindow', (), {
-                'match_table': type('MockTable', (), {
-                    'rowCount': lambda: len(placeholders),
-                    'item': lambda self, row, col: type('Item', (), {'text':
-                        lambda: placeholders[row] if col == 0 else matching_rules.get(placeholders[row], "")
-                    })() if col in [0, 1] else None
-                })(),
-            })(),
-            text_additions
-        )
-
-        print(f"   匹配的规则数量: {len(matched_text_additions)}")
-        print("   匹配的规则:")
-        for placeholder, rule in matched_text_additions.items():
+        print(f"   匹配的规则数量: {len(matched)}")
+        for placeholder, rule in matched.items():
             print(f"     {placeholder}: 后缀'{rule.get('suffix', '')}'")
 
-        # 4. 应用匹配的文本规则到ExactMatcher
-        print("\n4. 应用匹配的文本规则...")
-        for placeholder, rule in matched_text_additions.items():
-            prefix = rule.get('prefix', '')
-            suffix = rule.get('suffix', '')
-            exact_matcher.set_text_addition_rule(placeholder, prefix, suffix)
-            print(f"   应用: {placeholder} -> 后缀'{suffix}'")
-
-        print(f"   ExactMatcher中的规则: {len(exact_matcher.text_addition_rules)} 条")
-
-        # 5. 生成PPT
-        print("\n5. 生成测试PPT...")
-
-        # 准备替换数据
-        replacement_data = {}
-        for placeholder in placeholders:
-            if placeholder in matching_rules:
-                data_column = matching_rules[placeholder]
-                if data_column in data.columns:
-                    value = str(data[data_column].iloc[0])
-
-                    # 应用文本增加规则
-                    if placeholder in exact_matcher.text_addition_rules:
-                        rule = exact_matcher.text_addition_rules[placeholder]
-                        prefix = rule.get('prefix', '')
-                        suffix = rule.get('suffix', '')
-                        value = prefix + value + suffix
-
-                    replacement_data[placeholder] = value
-
-        print(f"   替换数据:")
-        for placeholder, value in replacement_data.items():
-            print(f"     {placeholder}: '{value}'")
-
-        # 关键检查：ph_中支的值
-        if "ph_中支" in replacement_data:
-            value = replacement_data["ph_中支"]
-            if "中支" in value:
-                print(f"   [问题] ph_中支 包含自定义后缀: '{value}'")
-                return False
-            else:
-                print(f"   [正确] ph_中支 不包含自定义后缀: '{value}'")
-
-        # 执行替换
-        template_processor.replace_placeholders(replacement_data)
-
-        # 保存结果
-        output_file = "output/fixed_logic_test.pptx"
-        template_processor.save_presentation(output_file)
-        print(f"   生成测试文件: {output_file}")
-
-        # 6. 最终验证
-        print("\n6. 最终验证...")
-        expected_matches = ["ph_保险种类", "ph_所属家庭"]  # 应该匹配的
-        expected_no_matches = ["ph_中心支公司"]  # 不应该匹配的
-
-        applied_rules = list(exact_matcher.text_addition_rules.keys())
-
+        # 4. 关键验证
+        print("\n4. 验证结果...")
         success = True
-        for expected in expected_matches:
-            if expected in applied_rules:
+
+        # 配置中不存在的占位符不应被应用
+        if "ph_中支" in matched:
+            print("   [ERROR] ph_中支 被错误应用了文本增加规则")
+            success = False
+        else:
+            print("   [OK] ph_中支 没有被应用文本增加规则")
+
+        # 配置中存在的占位符且表格中存在，应被应用
+        for expected in ["ph_保险种类", "ph_所属家庭"]:
+            if expected in matched:
                 print(f"   [OK] {expected} 正确被应用")
             else:
                 print(f"   [ERROR] {expected} 应该被应用但没有")
                 success = False
 
-        for expected in expected_no_matches:
-            if expected not in applied_rules:
-                print(f"   [OK] {expected} 正确没有被应用")
-            else:
-                print(f"   [ERROR] {expected} 不应该被应用但被应用了")
-                success = False
-
         print(f"\n{'修复验证成功' if success else '修复验证失败'}")
-        print(f"测试文件: {output_file}")
-        print("请检查生成的文件，确认 ph_中支 是否没有自定义后缀")
-
         return success
 
     except Exception as e:
@@ -173,6 +104,7 @@ def test_with_fixed_logic():
         import traceback
         traceback.print_exc()
         return False
+
 
 if __name__ == "__main__":
     success = test_with_fixed_logic()

@@ -10,11 +10,11 @@ import json
 import tempfile
 from datetime import datetime
 
-# 添加src目录到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# 将项目根目录加入 sys.path，确保 src 包可导入
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from config_manager import ConfigManager
-from exact_matcher import ExactMatcher
+from src.config import ConfigManager
+from src.exact_matcher import ExactMatcher
 import pandas as pd
 
 

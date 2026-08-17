@@ -98,3 +98,10 @@ desktop.ini
 # ZCode tooling
 # ====================
 .zcode/
+
+# ====================
+# Experiments 渲染输出（可由 calibrate.py 重新生成）
+# ====================
+experiments/out/
+experiments/reference/
+experiments/reference2/
