@@ -330,12 +330,14 @@ class FormatResolver:
 
     def run_props(self, shape, para, run) -> dict:
         """解析 run 的有效格式。返回
-        {sz_pt, bold, italic, spc_pt, fill, typeface}"""
+        {sz_pt, bold, italic, spc_pt, fill, typeface, strike, underline}"""
         lvl = _lvl(para)
         result = {'sz_pt': 18.0, 'bold': False, 'italic': False,
-                  'spc_pt': 0.0, 'fill': None, 'typeface': None}
+                  'spc_pt': 0.0, 'fill': None, 'typeface': None,
+                  'strike': False, 'underline': None}
         found = {'sz': False, 'bold': False, 'italic': False,
-                 'spc': False, 'fill': False, 'typeface': False}
+                 'spc': False, 'fill': False, 'typeface': False,
+                 'strike': False, 'underline': False}
 
         candidates = []  # (rPr-like element, owner part)
         rPr = run._r.find(qn('a:rPr'))
@@ -365,6 +367,12 @@ class FormatResolver:
                 if not found['spc'] and el.get('spc') is not None:
                     result['spc_pt'] = int(el.get('spc')) / 100.0
                     found['spc'] = True
+                if not found['strike'] and el.get('strike') is not None:
+                    result['strike'] = el.get('strike') != 'noStrike'
+                    found['strike'] = True
+                if not found['underline'] and el.get('u') is not None:
+                    result['underline'] = None if el.get('u') == 'none' else el.get('u')
+                    found['underline'] = True
                 if not found['fill']:
                     fill = parse_fill(el, self.theme_colors)
                     if fill is not None:

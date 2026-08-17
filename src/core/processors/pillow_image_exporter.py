@@ -46,6 +46,10 @@ logger = logging.getLogger(__name__)
 LINE_HEIGHT_RATIO = 1.25   # 微软雅黑 单倍行距/字号（PowerPoint 按字体 metrics）
 BASELINE0_FRAC = 0.72      # 首行基线在行高盒中的位置
 SHADOW_SIGMA_FRAC = 0.5    # PowerPoint blurRad -> Pillow GaussianBlur sigma 的系数
+ITALIC_SHEAR = 0.2126      # 合成斜体斜切率（tan 12°，无斜体字库时使用）
+STRIKE_POS_EM = 0.245      # 删除线位于基线上方 0.245em（COM 对照微软雅黑实测校准）
+STRIKE_THICK_EM = 0.05     # 删除线/下划线厚度 0.05em
+UNDERLINE_POS_EM = 0.09    # 下划线位于基线下方 0.09em
 # -----------------------------------------------------------------------
 
 EMU_PER_PT = 12700
@@ -103,16 +107,19 @@ def _tokenize(text):
 
 class _Style:
     __slots__ = ('size_pt', 'bold', 'italic', 'spc_pt', 'fill', 'shadow',
-                 'stroke', 'font_path')
+                 'stroke', 'strike', 'underline', 'font_path')
 
-    def __init__(self, size_pt, bold, italic, spc_pt, fill, shadow, stroke, font_path):
+    def __init__(self, size_pt, bold, italic, spc_pt, fill, shadow, stroke,
+                 strike, underline, font_path):
         self.size_pt, self.bold, self.italic = size_pt, bold, italic
         self.spc_pt, self.fill, self.shadow = spc_pt, fill, shadow
-        self.stroke, self.font_path = stroke, font_path
+        self.stroke, self.strike, self.underline = stroke, strike, underline
+        self.font_path = font_path
 
     def key(self):
         return (self.size_pt, self.bold, self.italic, self.spc_pt,
-                repr(self.fill), repr(self.shadow), repr(self.stroke))
+                repr(self.fill), repr(self.shadow), repr(self.stroke),
+                self.strike, self.underline)
 
 
 def _font_path_for(typeface, bold):
@@ -133,6 +140,7 @@ def _style_from_props(run, props, theme_colors):
     stroke = _parse_stroke(rPr, theme_colors)
     return _Style(props['sz_pt'], props['bold'], props['italic'], props['spc_pt'],
                   props['fill'], shadow, stroke,
+                  props.get('strike', False), props.get('underline'),
                   _font_path_for(props['typeface'], props['bold']))
 
 
@@ -716,7 +724,13 @@ class PillowImageExporter:
             md = ImageDraw.Draw(mask)
             f = self._font(st)
             for ch, _, x, yb in glyphs:
-                md.text((x, yb), ch, font=f, fill=255, anchor='ls')
+                if st.italic:
+                    self._draw_italic_glyph(mask, md, ch, f, x, yb)
+                else:
+                    md.text((x, yb), ch, font=f, fill=255, anchor='ls')
+            # 删除线/下划线画入蒙版 -> 自动继承纯色/渐变/图片填充与阴影
+            if st.strike or st.underline:
+                self._draw_decorations(md, glyphs, f)
             bbox = mask.getbbox()
             if not bbox:
                 continue
@@ -776,6 +790,46 @@ class PillowImageExporter:
                 fill_img.putalpha(mask.point(lambda v, a=int(alpha * 255): v * a // 255))
                 text_layer.alpha_composite(fill_img)
         canvas.alpha_composite(text_layer)
+
+    @staticmethod
+    def _draw_italic_glyph(mask, md, ch, f, x, yb):
+        """合成斜体：字形画到临时画布后绕基线斜切 12°，加法式贴入蒙版
+        （paste 以临时画布自身为掩码，避免覆盖相邻字形）"""
+        ascent, descent = f.getmetrics()
+        k = ITALIC_SHEAR
+        pad = int(k * (ascent + descent)) + 4
+        gw = int(math.ceil(f.getlength(ch))) + pad + 4
+        gh = ascent + descent + 4
+        tmp = Image.new('L', (max(2, gw), max(2, gh)), 0)
+        ImageDraw.Draw(tmp).text((2, ascent + 2), ch, font=f, fill=255,
+                                 anchor='ls')
+        B = ascent + 2  # 临时画布内的基线行
+        tmp = tmp.transform(tmp.size, Image.AFFINE,
+                            (1, k, -k * B, 0, 1, 0), resample=Image.BILINEAR)
+        mask.paste(tmp, (int(round(x)) - 2, int(round(yb)) - ascent - 2), tmp)
+
+    @staticmethod
+    def _draw_decorations(md, glyphs, f):
+        """删除线/下划线：按行画横条到文字蒙版。
+        行 = 相同基线 yb 的字形集合；横条跨度取该行字形 x 范围。"""
+        em = f.size
+        thick = max(1, int(round(STRIKE_THICK_EM * em)))
+        lines = {}
+        for ch, _, x, yb in glyphs:
+            info = lines.setdefault(round(yb, 1), [x, x + f.getlength(ch)])
+            info[0] = min(info[0], x)
+            info[1] = max(info[1], x + f.getlength(ch))
+        for yb, (x0, x1) in lines.items():
+            if glyphs[0][1].strike:
+                y = yb - STRIKE_POS_EM * em
+                md.rectangle((x0, y, x1, y + thick), fill=255)
+            u = glyphs[0][1].underline
+            if u:
+                y = yb + UNDERLINE_POS_EM * em
+                md.rectangle((x0, y, x1, y + thick), fill=255)
+                if u == 'dbl':  # 双下划线：第二条再低一档
+                    y2 = y + thick + max(1, thick)
+                    md.rectangle((x0, y2, x1, y2 + thick), fill=255)
 
     def _font(self, style):
         key = (style.font_path, style.size_pt, style.bold, style.italic)

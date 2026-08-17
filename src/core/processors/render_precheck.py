@@ -29,6 +29,8 @@
   INHERIT_UNRESOLVED 继承链存在无法解析的构造
   GRAD_PATH         路径渐变（仅支持线性 lin）
   TEXT_EFFECTS      文字 glow/倒影/3D（outerShdw/描边已支持，不算）
+  TEXT_STROKE       文字非纯色描边（渐变等，按无描边渲染）
+  TEXT_DECOR        下划线样式为波浪/加粗等（按单实线渲染）
   FONT_MISSING      字体未安装
   BG_REF            bgRef 主题背景样式无法解析
   BG_PATTERN        背景图案填充
@@ -37,7 +39,8 @@
 格式继承（INHERIT_RPR/COLOR/SIZE）、
 normAutofit 缩字（AUTOFIT_SCALE）、文字纯色描边（TEXT_STROKE）、
 图片裁剪 srcRect（PIC_CROP）、bgPr/bgRef 背景、图片文字填充 blipFill、
-18 种预设形状几何 + 纯色/线性渐变/图片形状填充 + outerShdw 形状阴影 + 纯色实线描边。
+18 种预设形状几何 + 纯色/线性渐变/图片形状填充 + outerShdw 形状阴影 + 纯色实线描边、
+合成斜体（无斜体字库时 12° 斜切）、删除线、单/双下划线、纯色文字描边。
 """
 
 import logging
@@ -309,4 +312,14 @@ class RenderPrecheck:
             if rPr.find(qn('a:effectLst') + '/' + qn(eff)) is not None:
                 issues.append(PrecheckIssue(idx, name, 'TEXT_EFFECTS', f'文字效果({eff[2:]})不支持'))
                 break
+        # 文字描边：纯色已支持，非纯色（渐变等）按无描边渲染
+        ln = rPr.find(qn('a:ln'))
+        if ln is not None and len(ln) > 0 and ln.find(qn('a:solidFill')) is None:
+            issues.append(PrecheckIssue(
+                idx, name, 'TEXT_STROKE', '文字非纯色描边不支持（按无描边渲染）'))
+        # 下划线：单线/双线已支持，波浪/加粗等按单实线渲染
+        u = rPr.get('u')
+        if u and u not in ('none', 'sng', 'dbl'):
+            issues.append(PrecheckIssue(
+                idx, name, 'TEXT_DECOR', f'下划线样式 {u} 按单实线渲染'))
         return issues
