@@ -431,21 +431,35 @@ class FormatResolver:
         return result
 
     def body_props(self, shape) -> dict:
-        """解析 bodyPr 有效属性 {anchor, l/r/t/bIns(EMU), wrap}"""
+        """解析 bodyPr 有效属性
+        {anchor, l/r/t/bIns(EMU), wrap, font_scale, lnspc_reduction}"""
         result = {'anchor': 't', 'lIns': 91440, 'rIns': 91440,
-                  'tIns': 45720, 'bIns': 45720, 'wrap': 'square'}
+                  'tIns': 45720, 'bIns': 45720, 'wrap': 'square',
+                  'font_scale': 1.0, 'lnspc_reduction': 0.0}
+        found = {'anchor': False, 'wrap': False,
+                 'lIns': False, 'rIns': False, 'tIns': False, 'bIns': False}
 
         def apply(bodyPr):
             if bodyPr is None:
                 return
-            if result['anchor'] == 't' and bodyPr.get('anchor'):
+            if not found['anchor'] and bodyPr.get('anchor') is not None:
                 result['anchor'] = bodyPr.get('anchor')
-            if result['wrap'] == 'square' and bodyPr.get('wrap'):
+                found['anchor'] = True
+            if not found['wrap'] and bodyPr.get('wrap') is not None:
                 result['wrap'] = bodyPr.get('wrap')
+                found['wrap'] = True
             for k in ('lIns', 'rIns', 'tIns', 'bIns'):
-                default = {'lIns': 91440, 'rIns': 91440, 'tIns': 45720, 'bIns': 45720}[k]
-                if result[k] == default and bodyPr.get(k):
+                if not found[k] and bodyPr.get(k) is not None:
                     result[k] = int(bodyPr.get(k))
+                    found[k] = True
+            # normAutofit 缩放只看形状自身（PowerPoint 把计算值存在形状上）
+            autofit = bodyPr.find(qn('a:normAutofit'))
+            if autofit is not None:
+                if autofit.get('fontScale'):
+                    result['font_scale'] = int(autofit.get('fontScale')) / 100000.0
+                if autofit.get('lnSpcReduction'):
+                    result['lnspc_reduction'] = \
+                        int(autofit.get('lnSpcReduction')) / 100000.0
 
         txBody = shape._element.find(qn('p:txBody'))
         if txBody is not None:

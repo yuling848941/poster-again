@@ -79,21 +79,38 @@ def _parse_shadow(rPr):
     }
 
 
+def _parse_stroke(rPr, theme_colors):
+    """解析文字描边 rPr/a:ln，返回 None | (width_pt, rgb, alpha)"""
+    if rPr is None:
+        return None
+    ln = rPr.find(qn('a:ln'))
+    if ln is None:
+        return None
+    solid = ln.find(qn('a:solidFill'))
+    if solid is None:
+        return None  # noFill 或渐变描边：不支持渐变描边
+    rgb, alpha = parse_color_el(list(solid)[0], theme_colors)
+    w_pt = int(ln.get('w', '9525')) / EMU_PER_PT
+    return (w_pt, rgb, alpha)
+
+
 def _tokenize(text):
     """CJK 逐字、英文按词、空格独立成 token（换行断点）"""
     return [m.group(0) for m in re.finditer(r'[A-Za-z0-9]+(?:[.\u00b7][A-Za-z0-9]+)*|\s+|.', text)]
 
 
 class _Style:
-    __slots__ = ('size_pt', 'bold', 'italic', 'spc_pt', 'fill', 'shadow', 'font_path')
+    __slots__ = ('size_pt', 'bold', 'italic', 'spc_pt', 'fill', 'shadow',
+                 'stroke', 'font_path')
 
-    def __init__(self, size_pt, bold, italic, spc_pt, fill, shadow, font_path):
+    def __init__(self, size_pt, bold, italic, spc_pt, fill, shadow, stroke, font_path):
         self.size_pt, self.bold, self.italic = size_pt, bold, italic
-        self.spc_pt, self.fill, self.shadow, self.font_path = spc_pt, fill, shadow, font_path
+        self.spc_pt, self.fill, self.shadow = spc_pt, fill, shadow
+        self.stroke, self.font_path = stroke, font_path
 
     def key(self):
         return (self.size_pt, self.bold, self.italic, self.spc_pt,
-                repr(self.fill), repr(self.shadow))
+                repr(self.fill), repr(self.shadow), repr(self.stroke))
 
 
 def _font_path_for(typeface, bold):
@@ -107,12 +124,14 @@ def _font_path_for(typeface, bold):
     return _FONT_FILES.get(('微软雅黑', bold), _DEFAULT_FONT)
 
 
-def _style_from_props(run, props):
-    """把继承解析出的有效属性转换为渲染样式（阴影只取显式 rPr）"""
+def _style_from_props(run, props, theme_colors):
+    """把继承解析出的有效属性转换为渲染样式（阴影/描边只取显式 rPr）"""
     rPr = run._r.find(qn('a:rPr'))
     shadow = _parse_shadow(rPr)
+    stroke = _parse_stroke(rPr, theme_colors)
     return _Style(props['sz_pt'], props['bold'], props['italic'], props['spc_pt'],
-                  props['fill'], shadow, _font_path_for(props['typeface'], props['bold']))
+                  props['fill'], shadow, stroke,
+                  _font_path_for(props['typeface'], props['bold']))
 
 
 def _make_linear_gradient(w, h, stops, ang_deg):
@@ -326,6 +345,18 @@ class PillowImageExporter:
     def _draw_picture(self, canvas, shape, scale):
         import io
         img = Image.open(io.BytesIO(shape.image.blob)).convert('RGBA')
+        # srcRect 裁剪：l/t/r/b 为源图百分比（1/100000 单位）
+        blipFill = shape._element.find(qn('p:blipFill'))
+        if blipFill is not None:
+            src = blipFill.find(qn('a:srcRect'))
+            if src is not None:
+                w0, h0 = img.size
+                l = int(src.get('l', '0')) / 100000.0
+                t = int(src.get('t', '0')) / 100000.0
+                r = int(src.get('r', '0')) / 100000.0
+                b = int(src.get('b', '0')) / 100000.0
+                img = img.crop((int(w0 * l), int(h0 * t),
+                                int(w0 * (1 - r)), int(h0 * (1 - b))))
         w = max(1, int(round(shape.width * scale)))
         h = max(1, int(round(shape.height * scale)))
         img = img.resize((w, h), Image.LANCZOS)
@@ -347,35 +378,24 @@ class PillowImageExporter:
         box_t = shape.top * scale
         avail = shape.width * scale - ins['lIns'] - ins['rIns']
 
-        # 1) 展开段落 -> 带样式的 token 序列（格式经继承链解析）
-        paragraphs = []  # (algn, lnSpc_pct, [(token, style)])
+        # 1) 展开段落 -> 带样式的 token 序列（格式经继承链解析，应用 normAutofit 缩放）
+        font_scale = bp.get('font_scale', 1.0)
+        paragraphs = []  # (algn, line_h_px, lines[[ (token, style, adv) ]])
         for para in tf.paragraphs:
             pp = resolver.para_props(shape, para)
-            algn = 'just' if pp['algn'] in ('just', 'justLow') else pp['algn']
-            if algn == 'just':
-                algn = 'l'  # 两端对齐按左对齐渲染（预检已告警）
+            algn = pp['algn'] if pp['algn'] in ('l', 'ctr', 'r') else 'l'
             toks = []
             for run in para.runs:
                 props = resolver.run_props(shape, para, run)
-                st = _style_from_props(run, props)
+                props['sz_pt'] = props['sz_pt'] * font_scale
+                st = _style_from_props(run, props, theme_colors)
                 for tk in _tokenize(run.text):
                     toks.append((tk, st))
-            paragraphs.append((str(algn), pp['lnSpc_pct'], toks))
-
-        # 2) 逐段布局行（与 PoC 校准版一致）
-        layers = {}   # style.key() -> [(char, style, x_px, baseline_px)]
-        y_baseline = box_t + ins['tIns']
-        first_line = True
-        for algn, lnSpc, toks in paragraphs:
             if not toks:
                 continue
             max_sz = max(st.size_pt for _, st in toks)
-            line_h = pt2px(max_sz) * LINE_HEIGHT_RATIO * lnSpc
-            if first_line:
-                y_baseline += BASELINE0_FRAC * line_h
-                first_line = False
-            else:
-                y_baseline += line_h
+            line_h = (pt2px(max_sz) * LINE_HEIGHT_RATIO * pp['lnSpc_pct']
+                      * (1.0 - bp.get('lnspc_reduction', 0.0)))
 
             lines, cur, cur_w = [], [], 0.0
             for tk, st in toks:
@@ -390,6 +410,31 @@ class PillowImageExporter:
                 cur_w += adv
             if cur:
                 lines.append(cur)
+            if lines:
+                paragraphs.append((algn, line_h, lines))
+
+        if not paragraphs:
+            return
+
+        # 2) anchor 垂直定位（两遍布局：文本块总高 = Σ 行高）
+        total_h = sum(len(lines) * line_h for _, line_h, lines in paragraphs)
+        content_h = shape.height * scale - ins['tIns'] - ins['bIns']
+        if bp['anchor'] == 'ctr':
+            y_off = max(0.0, (content_h - total_h) / 2.0)
+        elif bp['anchor'] in ('b', 'just'):
+            y_off = max(0.0, content_h - total_h)
+        else:
+            y_off = 0.0
+
+        layers = {}   # style.key() -> [(char, style, x_px, baseline_px)]
+        y_baseline = box_t + ins['tIns'] + y_off
+        first_line = True
+        for algn, line_h, lines in paragraphs:
+            if first_line:
+                y_baseline += BASELINE0_FRAC * line_h
+                first_line = False
+            else:
+                y_baseline += line_h
 
             for line in lines:
                 lw = sum(adv for _, _, adv in line)
@@ -436,6 +481,19 @@ class PillowImageExporter:
                     sh_img,
                     (int(round(dist * math.cos(th))), int(round(dist * math.sin(th))))
                 )
+            if st.stroke:
+                w_pt, rgb, alpha = st.stroke
+                stroke_mask = Image.new('L', (W, H), 0)
+                sd = ImageDraw.Draw(stroke_mask)
+                # OOXML 描边宽为全宽，Pillow stroke_width 每侧外扩 -> 取半
+                sw = max(1, int(round(pt2px(w_pt) / 2)))
+                for ch, _, x, yb in glyphs:
+                    sd.text((x, yb), ch, font=f, fill=0, anchor='ls',
+                            stroke_width=sw, stroke_fill=255)
+                stroke_img = Image.new('RGBA', (W, H), (*rgb, 0))
+                stroke_img.putalpha(
+                    stroke_mask.point(lambda v, a=int(alpha * 255): v * a // 255))
+                text_layer.alpha_composite(stroke_img)
             gx0, gy0, gx1, gy1 = bbox
             if st.fill and st.fill[0] == 'grad':
                 _, stops, ang = st.fill

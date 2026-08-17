@@ -172,7 +172,7 @@ def main():
     check('ANCHOR 被识别', 'ANCHOR' in codes)
     check('TABLE 被识别', 'TABLE' in codes)
     check('GROUP 被识别', 'GROUP' in codes)
-    check('AUTOFIT_SCALE 被识别', 'AUTOFIT_SCALE' in codes)
+    check('AUTOFIT_SCALE 已支持不再告警', 'AUTOFIT_SCALE' not in codes)
     # 继承解析器接管后：无格式 run 通过母版 otherStyle 解析（18pt 黑），
     # 与 PowerPoint 行为一致，不再告警
     check('继承类问题零误报（解析器已支持格式继承）',

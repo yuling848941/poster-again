@@ -16,29 +16,28 @@
   SMARTART          SmartArt
   OLE               OLE/嵌入对象
   CONNECTOR         连接线
-  PIC_CROP          图片裁剪(srcRect)
   PIC_EFFECTS       图片效果(alphaModFix/duotone等)
   SHAPE_GEOM        非矩形形状几何（文字仍会渲染，形状外观不会）
   SHAPE_FILL        形状底色填充（不会渲染）
   SHAPE_EFFECTS     形状效果（阴影等）
   SHAPE_LINE        形状描边
   ANCHOR            垂直对齐非顶端
-  AUTOFIT_SCALE     normAutofit 自动缩字
   VERT_TEXT         竖排文字
   NO_WRAP           禁止自动换行
   WORDART           艺术字变形
   BULLETS           项目符号/编号
   LNSPC_PTS         固定磅值行距(spcPts)
   ALIGN_JUST        两端对齐
-  INHERIT_RPR       run 无任何格式属性（格式全继承，渲染将退化为默认样式）
-  INHERIT_COLOR     run 未显式指定颜色/渐变（颜色继承）
-  INHERIT_SIZE      run 未显式指定字号（字号继承）
+  INHERIT_UNRESOLVED 继承链存在无法解析的构造
   GRAD_PATH         路径渐变（仅支持线性 lin）
-  TEXT_STROKE       文字描边
-  TEXT_EFFECTS      文字 glow/倒影/3D（outerShdw 已支持，不算）
+  TEXT_EFFECTS      文字 glow/倒影/3D（outerShdw/描边已支持，不算）
   FONT_MISSING      字体未安装
-  BG_REF            背景引用母版/主题(bgRef)
+  BG_REF            bgRef 主题背景样式无法解析
   BG_PATTERN        背景图案填充
+
+已支持（对应问题码已退役）：格式继承（INHERIT_RPR/COLOR/SIZE）、
+normAutofit 缩字（AUTOFIT_SCALE）、文字纯色描边（TEXT_STROKE）、
+图片裁剪 srcRect（PIC_CROP）、bgPr/bgRef 背景、图片文字填充 blipFill。
 """
 
 import logging
@@ -176,8 +175,6 @@ class RenderPrecheck:
         issues = []
         blipFill = el.find(qn('p:blipFill'))
         if blipFill is not None:
-            if blipFill.find(qn('a:srcRect')) is not None:
-                issues.append(PrecheckIssue(idx, name, 'PIC_CROP', '图片裁剪(srcRect)不会应用'))
             blip = blipFill.find(qn('a:blip'))
             if blip is not None and len(blip) > 0:
                 issues.append(PrecheckIssue(idx, name, 'PIC_EFFECTS',
@@ -233,11 +230,6 @@ class RenderPrecheck:
             issues.append(PrecheckIssue(idx, name, 'NO_WRAP', '禁止自动换行(wrap=none)不支持'))
 
         if bodyPr is not None:
-            autofit = bodyPr.find(qn('a:normAutofit'))
-            if autofit is not None and (autofit.get('fontScale') or autofit.get('lnSpcReduction')):
-                issues.append(PrecheckIssue(
-                    idx, name, 'AUTOFIT_SCALE',
-                    f'自动缩字 fontScale={autofit.get("fontScale")}，文字将按原始字号渲染'))
             if bodyPr.get('vert') not in (None, 'horz'):
                 issues.append(PrecheckIssue(idx, name, 'VERT_TEXT',
                                             f'竖排文字 vert={bodyPr.get("vert")} 不支持'))
@@ -284,8 +276,6 @@ class RenderPrecheck:
         grad = rPr.find(qn('a:gradFill'))
         if grad is not None and grad.find(qn('a:lin')) is None:
             issues.append(PrecheckIssue(idx, name, 'GRAD_PATH', '路径渐变仅支持线性(lin)'))
-        if rPr.find(qn('a:ln')) is not None:
-            issues.append(PrecheckIssue(idx, name, 'TEXT_STROKE', '文字描边不会渲染'))
         for eff in ('a:glow', 'a:reflection', 'a:scene3d', 'a:relOff', 'a:softEdge'):
             if rPr.find(qn('a:effectLst') + '/' + qn(eff)) is not None:
                 issues.append(PrecheckIssue(idx, name, 'TEXT_EFFECTS', f'文字效果({eff[2:]})不支持'))
