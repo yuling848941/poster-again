@@ -123,14 +123,19 @@ class _Style:
 
 
 def _font_path_for(typeface, bold):
-    """字体名 -> 字体文件；未注册字体回退微软雅黑并告警"""
+    """字体名 -> 字体文件；带存在性检查，不可用逐级回退微软雅黑并告警"""
+    candidates = []
     if typeface:
-        for key in ((typeface, bold), (typeface, False),
-                    (typeface.replace('-Bold', ''), bold)):
-            if key in _FONT_FILES:
-                return _FONT_FILES[key]
-        logger.warning(f"字体未注册，回退微软雅黑: {typeface!r}")
-    return _FONT_FILES.get(('微软雅黑', bold), _DEFAULT_FONT)
+        candidates += [(typeface, bold), (typeface, False),
+                       (typeface.replace('-Bold', ''), bold)]
+    candidates += [('微软雅黑', bold), ('微软雅黑', False)]
+    for key in candidates:
+        path = _FONT_FILES.get(key)
+        if path and os.path.exists(path):
+            return path
+    if typeface:
+        logger.warning(f"字体不可用（未注册或文件缺失），回退默认字体: {typeface!r}")
+    return _DEFAULT_FONT
 
 
 def _style_from_props(run, props, theme_colors):
@@ -639,8 +644,10 @@ class PillowImageExporter:
         box_h_px = shape.height * scale * xform.sy
 
         # 1) 展开段落 -> 带样式的 token 序列（格式经继承链解析，应用 normAutofit 缩放）
+        # 空段落无行可画但占一行高（PowerPoint 行为），行高取整框最大字号
         font_scale = bp.get('font_scale', 1.0) * xform.s_font
-        paragraphs = []  # (algn, line_h_px, lines[[ (token, style, adv) ]])
+        paras_data = []  # [(algn, lnSpc_pct, toks)]
+        frame_max_sz = 18.0
         for para in tf.paragraphs:
             pp = resolver.para_props(shape, para)
             algn = pp['algn'] if pp['algn'] in ('l', 'ctr', 'r') else 'l'
@@ -649,12 +656,15 @@ class PillowImageExporter:
                 props = resolver.run_props(shape, para, run)
                 props['sz_pt'] = props['sz_pt'] * font_scale
                 st = _style_from_props(run, props, theme_colors)
+                frame_max_sz = max(frame_max_sz, st.size_pt)
                 for tk in _tokenize(run.text):
                     toks.append((tk, st))
-            if not toks:
-                continue
-            max_sz = max(st.size_pt for _, st in toks)
-            line_h = (pt2px(max_sz) * LINE_HEIGHT_RATIO * pp['lnSpc_pct']
+            paras_data.append((algn, pp['lnSpc_pct'], toks))
+
+        paragraphs = []  # (algn, line_h_px, lines[[ (token, style, adv) ]])
+        for algn, lnSpc, toks in paras_data:
+            max_sz = max((st.size_pt for _, st in toks), default=frame_max_sz)
+            line_h = (pt2px(max_sz) * LINE_HEIGHT_RATIO * lnSpc
                       * (1.0 - bp.get('lnspc_reduction', 0.0)))
 
             lines, cur, cur_w = [], [], 0.0
@@ -670,14 +680,14 @@ class PillowImageExporter:
                 cur_w += adv
             if cur:
                 lines.append(cur)
-            if lines:
-                paragraphs.append((algn, line_h, lines))
+            paragraphs.append((algn, line_h, lines))  # 空段落 lines=[] 保留占位
 
         if not paragraphs:
             return
 
-        # 2) anchor 垂直定位（两遍布局：文本块总高 = Σ 行高）
-        total_h = sum(len(lines) * line_h for _, line_h, lines in paragraphs)
+        # 2) anchor 垂直定位（两遍布局：文本块总高 = Σ 行高，空段落按 1 行计）
+        total_h = sum(max(1, len(lines)) * line_h
+                      for _, line_h, lines in paragraphs)
         content_h = box_h_px - ins['tIns'] - ins['bIns']
         if bp['anchor'] == 'ctr':
             y_off = max(0.0, (content_h - total_h) / 2.0)
@@ -688,14 +698,12 @@ class PillowImageExporter:
 
         layers = {}   # style.key() -> [(char, style, x_px, baseline_px)]
         y_baseline = box_t + ins['tIns'] + y_off
-        first_line = True
+        first_para = True
         for algn, line_h, lines in paragraphs:
-            if first_line:
+            if first_para:
                 y_baseline += BASELINE0_FRAC * line_h
-                first_line = False
-            else:
-                y_baseline += line_h
-
+                first_para = False
+            # 行距推进只发生在每行画完之后（段界不额外加行高，与 PowerPoint 一致）
             for line in lines:
                 lw = sum(adv for _, _, adv in line)
                 lw -= pt2px(line[-1][1].spc_pt)  # 行尾字距不计入居中宽度
@@ -712,6 +720,8 @@ class PillowImageExporter:
                             layers.setdefault(st.key(), []).append((ch, st, x, y_baseline))
                         x += f.getlength(ch) + pt2px(st.spc_pt)
                 y_baseline += line_h
+            if not lines:
+                y_baseline += line_h  # 空段落：无行可画，占一行高
 
         # 3) 按样式分组绘制（阴影 -> 填充）
         if not layers:
@@ -835,5 +845,24 @@ class PillowImageExporter:
         key = (style.font_path, style.size_pt, style.bold, style.italic)
         if key not in self.font_cache:
             size_px = style.size_pt * self._dpi / 72.0
-            self.font_cache[key] = ImageFont.truetype(style.font_path, size_px)
+            try:
+                font = ImageFont.truetype(style.font_path, size_px)
+            except OSError as e:
+                # 最终兜底：常见 CJK 字体链逐个尝试，避免单个字体文件
+                # 缺失导致整个导出失败
+                for fb in (r'C:\Windows\Fonts\msyh.ttc',
+                           r'C:\Windows\Fonts\msyhbd.ttc',
+                           r'C:\Windows\Fonts\simsun.ttc',
+                           r'C:\Windows\Fonts\simhei.ttf'):
+                    if os.path.exists(fb):
+                        try:
+                            font = ImageFont.truetype(fb, size_px)
+                            logger.warning(
+                                f"字体加载失败 {style.font_path!r}: {e}，回退 {fb}")
+                            break
+                        except OSError:
+                            continue
+                else:
+                    raise
+            self.font_cache[key] = font
         return self.font_cache[key]
