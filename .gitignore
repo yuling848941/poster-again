@@ -105,3 +105,6 @@ desktop.ini
 experiments/out/
 experiments/reference/
 experiments/reference2/
+
+# 例外：安卓 App 内置测试模板是源码一部分（克隆后需完整）
+!android/app/src/main/assets/*.pptx
