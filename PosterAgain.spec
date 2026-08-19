@@ -6,9 +6,16 @@ PosterAgain PyInstaller spec
 1. excludes 排除所有不用的 PySide6 模块（3D/WebEngine/Multimedia/Qml 等）
 2. JDK 路径过滤：PyInstaller 会误把系统 PATH 里的 JDK DLL 卷入，必须剔除
 3. UPX 压缩未启用（PySide6/Python 3.13 的 CFG 保护 DLL 不兼容 UPX，会拖慢且无效）
+4. 二进制黑名单剔除（详见 EXCLUDED_EXTRA_DLLS，源体积 ~38MB / exe ~19MB）：
+   - opengl32sw：Qt 软件 OpenGL 渲染器（纯 Widgets 应用不加载，PyInstaller 无条件卷入）
+   - mfc140u + win32ui：pywin32 的 Pythonwin IDE 组件（COM 只用 pythoncom/pywintypes）
+   - qdirect2d：备用平台插件（仅 QT_QPA_PLATFORM=direct2d 时加载）
+   - Qt6Network 链路：无任何网络代码（TLS/networkinformation 插件随删）
+   注意：numpy 的 OpenBLAS（~19MB）不能删--numpy 2.x import 时即硬链接，
+   删除直接崩溃（已实测）；字体不子集化（缺字形风险，违背"效果不变"）
 """
 
-# 不需要的 PySide6 模块（QtCore/QtGui/QtWidgets/QtNetwork 是必需的，其余排除）
+# 不需要的 PySide6 模块（QtCore/QtGui/QtWidgets 是必需的，其余排除）
 EXCLUDED_QT_MODULES = [
     'PySide6.Qt3DCore', 'PySide6.Qt3DRender', 'PySide6.Qt3DInput',
     'PySide6.Qt3DLogic', 'PySide6.Qt3DAnimation', 'PySide6.Qt3DExtras',
@@ -35,6 +42,8 @@ EXCLUDED_QT_MODULES = [
     # 系统里其他无关第三方包
     'yt_dlp', 'websockets', 'curl_cffi', 'mutagen', 'secretstorage',
     'sympy', 'networkx', 'mpl_toolkits', 'matplotlib', 'PIL.ImageQt',
+    # 瘦身：无网络代码/不用 win32ui/不读 AVIF（PIL 插件按需惰性加载）
+    'PySide6.QtNetwork', 'win32ui', 'PIL._avif',
     # 其他不用的标准库（注意：distutils/setuptools/pip 不排除，
     # PyInstaller 内部 hook 依赖它们，排除会导致 ValueError）
     'tkinter', 'unittest', 'pydoc_data',
@@ -52,6 +61,18 @@ EXCLUDED_QT_DLLS = [
     'Qt6TextToSpeech', 'Qt6Wayland',
 ]
 
+# 瘦身黑名单（文件名前缀匹配，Qt 与非 Qt 混合）：
+# - opengl32sw：Qt 软件 OpenGL（19.7MB，Widgets 应用永不加载）
+# - qtnetwork/Qt6Network + tls/networkinformation 插件：无网络功能
+# - qdirect2d：备用平台插件
+# - win32ui + mfc140u：pywin32 的 Pythonwin IDE 组件（6.6MB）
+# 注意 qtnetwork 前缀同时匹配 QtNetwork.pyd 与 Qt6Network.dll（前缀匹配不区分）
+EXCLUDED_EXTRA_DLLS = [
+    'opengl32sw', 'qt6network', 'qtnetwork',
+    'qopensslbackend', 'qcertonlybackend', 'qschannelbackend', 'qnetworklistmanager',
+    'qdirect2d', 'win32ui', 'mfc140u',
+]
+
 
 def _should_exclude_binary(path):
     """判断一个二进制文件是否应该从打包结果中剔除"""
@@ -61,10 +82,10 @@ def _should_exclude_binary(path):
     if 'jdk' in p or 'jre' in p or '/java/' in p:
         return True
 
-    # 2. 剔除不用的 PySide6 Qt 原生 DLL
+    # 2. 剔除不用的 PySide6 Qt 原生 DLL + 瘦身黑名单
     import os
     filename = os.path.basename(p)
-    for prefix in EXCLUDED_QT_DLLS:
+    for prefix in EXCLUDED_QT_DLLS + EXCLUDED_EXTRA_DLLS:
         if filename.startswith(prefix.lower()):
             return True
 
@@ -77,7 +98,7 @@ a = Analysis(
     binaries=[],
     datas=[('resources', 'resources')],
     hiddenimports=[
-        'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'PySide6.QtNetwork',
+        'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
         'pandas', 'openpyxl', 'pptx', 'numpy', 'yaml', 'psutil',
         'fontTools', 'fontTools.ttLib',
     ],
