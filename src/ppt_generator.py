@@ -11,6 +11,7 @@ import logging
 import shutil
 import tempfile
 import time
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
 import pandas as pd
 from pathlib import Path
@@ -22,15 +23,40 @@ try:
     from src.core.factory.office_suite_factory import OfficeSuiteFactory
     from src.data_reader import DataReader
     from src.exact_matcher import ExactMatcher
+    from src.render_core import RenderPrecheck
 except ImportError:
     from core.processors.pptx_processor import PPTXProcessor
     from core.interfaces.template_processor import ITemplateProcessor
     from core.factory.office_suite_factory import OfficeSuiteFactory
     from data_reader import DataReader
     from exact_matcher import ExactMatcher
+    from render_core import RenderPrecheck
 
 # 设置日志 - 使用模块级 logger，避免 basicConfig 全局配置冲突
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FailedRow:
+    """单行生成失败记录（批量容错：跳过并汇报，可单独重试）"""
+    index: int      # DataFrame 行标签（0 起）
+    row_number: int # 用户可见行号（Excel 含表头行，标签+2）
+    name: str       # 姓名标识（无姓名列时为 "output"）
+    stage: str      # 失败阶段：export(导出图片) / fallback(降级PPT) / ppt(生成PPT)
+    error: str      # 错误摘要
+
+
+@dataclass
+class BatchResult:
+    """批量生成结果摘要（成功数 + 失败明细 + 模板预检提示）"""
+    success_count: int = 0
+    failed_rows: List[FailedRow] = field(default_factory=list)
+    total: int = 0
+    precheck_issues: List[Any] = field(default_factory=list)  # List[PrecheckIssue]
+
+    def __int__(self) -> int:
+        # 兼容旧调用方把返回值当成功计数使用
+        return self.success_count
 
 
 class PPTGenerator:
@@ -323,11 +349,47 @@ class PPTGenerator:
             logger.error(f"保存贺语文件失败 {output_path}: {str(e)}")
             return False
 
+    def _precheck_template(self) -> List[Any]:
+        """
+        对当前模板跑一次渲染预检（模板级，与行数据无关）
+
+        Returns:
+            List[PrecheckIssue]: 预检问题列表（空列表 = 模板完全支持；
+            预检本身失败时返回空列表并不影响生成）
+        """
+        if not self.template_path:
+            return []
+        try:
+            from src.render_core import font_registry
+        except ImportError:
+            from render_core import font_registry
+        try:
+            # 字体检查需要显式提供已安装字体集（与 PillowImageExporter.precheck 同源）
+            installed = font_registry.available_typefaces()
+            try:
+                try:
+                    from src.core.utils.font_checker import FontChecker
+                except ImportError:
+                    from core.utils.font_checker import FontChecker
+                installed |= FontChecker().get_installed_fonts()
+            except Exception as e:
+                logger.debug(f"系统字体检查跳过（仅用注册字体集）: {e}")
+            return list(RenderPrecheck(installed_fonts=installed)
+                        .check_pptx(self.template_path))
+        except Exception as e:
+            logger.debug(f"模板预检失败（不影响生成）: {e}")
+            return []
+
     def batch_generate(self, output_dir: str, progress_callback=None,
                       generate_images: bool = False, image_format: str = "PNG",
-                      image_quality: float = 1.0) -> int:
+                      image_quality: float = 1.0,
+                      row_indices: Optional[List[int]] = None) -> BatchResult:
         """
         批量生成PPT或图片（GUI调用接口）
+
+        单行失败不再静默跳过：记录到 result.failed_rows 并继续后续行，
+        可通过 row_indices 只重跑指定行。仅环境级致命错误（如 Office 缺失
+        的 RuntimeError）仍然整批中止。
 
         Args:
             output_dir: 输出目录
@@ -335,37 +397,62 @@ class PPTGenerator:
             generate_images: 是否生成图片
             image_format: 图片格式
             image_quality: 图片缩放倍数 (1.0=原始, 2.0=增强, 3.0=高质量)
+            row_indices: 只生成指定的 DataFrame 行标签列表（失败行重试用）；
+                         None = 全部行
 
         Returns:
-            int: 成功生成的文件数量
+            BatchResult: success_count / failed_rows / total / precheck_issues
         """
         if not self.template_loaded:
             raise ValueError("模板未加载，请先调用load_template()")
-        
+
         if not self.data_loaded:
             raise ValueError("数据未加载，请先调用load_data()")
-            
+
         if not self.matching_completed:
             logger.warning("匹配未完成，将使用自动匹配")
             self.auto_match_placeholders()
-        
+
         try:
             # 确保输出目录存在
             os.makedirs(output_dir, exist_ok=True)
-            
+
             # 获取匹配规则
             matching_rules = self.exact_matcher.get_matching_rules()
             if not matching_rules:
                 raise ValueError("没有有效的匹配规则")
-            
+
             generated_count = 0
+            failed_rows: List[FailedRow] = []
             data_count = len(self.data_reader.data)
-            
+
+            # 模板级渲染预检（只跑一次，结果随 BatchResult 上报界面）
+            precheck_issues = self._precheck_template()
+
+            # 计算本次要处理的行集合与总数（row_indices 用于失败行重试）
+            selected = None if row_indices is None else {int(i) for i in row_indices}
+            if selected is None:
+                to_process = data_count
+            else:
+                to_process = sum(1 for i in self.data_reader.data.index if i in selected)
+            processed_rows = 0
+
             for index, row in self.data_reader.data.iterrows():
+                if selected is not None and index not in selected:
+                    continue
+                processed_rows += 1
+
                 # 调用进度回调
                 if progress_callback:
-                    progress_callback(index + 1, data_count, f"正在生成第 {index + 1}/{data_count} 个文件...")
-                
+                    progress_callback(processed_rows, to_process,
+                                      f"正在生成第 {processed_rows}/{to_process} 个文件...")
+
+                # 用户可见行号（Excel 首行为表头，DataFrame 标签 0 对应第 2 行）
+                try:
+                    row_number = int(index) + 2
+                except (TypeError, ValueError):
+                    row_number = processed_rows + 1
+
                 # 准备数据（使用 ExactMatcher 以应用文本增加规则）
                 data = self.exact_matcher.get_all_data_for_row(index)
                 if not data:
@@ -375,9 +462,10 @@ class PPTGenerator:
                             data[placeholder] = str(row[column])
                         else:
                             data[placeholder] = ""
-                
+
                 # 生成文件名
                 # 优先使用含"姓名"的列内容作为文件名标识，找不到则用 output 兜底
+                row_name = 'output'
                 try:
                     name_value = 'output'
                     # 优先精确匹配"姓名"列；否则取第一个包含"姓名"二字的列
@@ -393,13 +481,24 @@ class PPTGenerator:
                         name_value = 'output'
                     else:
                         name_value = str(name_value).strip()
+                    row_name = name_value
                     filename = f"{index+1}_{name_value}"
                 except (KeyError, AttributeError, TypeError) as e:
                     logger.debug(f"获取行数据失败：{str(e)}，使用默认文件名")
                     filename = f"{index+1}_output"
-                
+
                 # 确保文件名有效
                 filename = self._sanitize_filename(filename)
+
+                def _record_failure(stage: str, error: str):
+                    """记录失败行并通过进度回调告知（不中断批次）"""
+                    failed_rows.append(FailedRow(
+                        index=index, row_number=row_number,
+                        name=row_name, stage=stage, error=str(error)[:300]))
+                    logger.error(f"第 {row_number} 行（{row_name}）{stage} 阶段失败: {error}")
+                    if progress_callback:
+                        progress_callback(processed_rows, to_process,
+                                          f"第 {row_number} 行（{row_name}）失败，已跳过: {str(error)[:120]}")
 
                 # 生成贺语文件（如果设置了贺语模板）
                 if self.message_template:
@@ -443,7 +542,7 @@ class PPTGenerator:
                             generated_count += 1
                             logger.info(f"生成图片成功: {filename} -> {len(generated_files)} 张图片")
                         else:
-                            logger.error(f"导出图片失败")
+                            _record_failure("export", "渲染引擎未产出图片（详见日志）")
                     except RuntimeError as e:
                         # Office 未安装
                         logger.error(f"导出图片失败: {e}")
@@ -458,7 +557,7 @@ class PPTGenerator:
                             generated_count += 1
                             logger.info(f"生成PPT: {output_path}")
                         except Exception as e2:
-                            logger.error(f"生成第 {index + 1} 个文件时出错: {str(e2)}")
+                            _record_failure("fallback", e2)
                     finally:
                         # 删除临时PPT文件
                         if temp_pptx and os.path.exists(temp_pptx):
@@ -476,20 +575,32 @@ class PPTGenerator:
                         generated_count += 1
                         logger.info(f"生成PPT: {output_path}")
                     except Exception as e:
-                        logger.error(f"生成第 {index + 1} 个文件时出错: {str(e)}")
+                        _record_failure("ppt", e)
                         # 注意：失败后不能 continue，必须继续执行下方的 load_template，
                         # 否则下一行会在被污染的内存模板上生成，导致数据串行（H2 修复）
-                
-                # 重新加载模板以准备下一次生成
-                if index < data_count - 1:
+
+                # 重新加载模板以准备下一次生成（仅当还有后续待处理行）
+                if processed_rows < to_process:
                     self.template_processor.load_template(self.template_path)
-            
+
             # 重新加载模板，准备下一次批量生成
             self.template_processor.load_template(self.template_path)
-            
-            logger.info(f"批量生成完成，共生成 {generated_count} 个文件")
-            return generated_count
-            
+
+            result = BatchResult(
+                success_count=generated_count,
+                failed_rows=failed_rows,
+                total=to_process,
+                precheck_issues=precheck_issues,
+            )
+            if failed_rows:
+                logger.warning(f"批量生成完成：成功 {generated_count}/{to_process}，"
+                               f"失败 {len(failed_rows)} 行（行号: "
+                               f"{', '.join(str(f.row_number) for f in failed_rows[:10])}"
+                               f"{'...' if len(failed_rows) > 10 else ''}）")
+            else:
+                logger.info(f"批量生成完成，共生成 {generated_count} 个文件")
+            return result
+
         except Exception as e:
             logger.error(f"批量生成时出错: {str(e)}")
             raise
