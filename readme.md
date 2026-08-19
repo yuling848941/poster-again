@@ -106,6 +106,15 @@ poster-again/
 
 ## 版本历史
 
+### v1.1.0（2026-08-19）
+- 批量容错（双端）：单行数据失败跳过并汇报行号/原因，可只重试失败行
+- 预检结果上界面（双端）：模板近似渲染效果/字体回退提示直接展示给用户
+- 桌面易用性：模板/数据/输出"最近使用"（MRU 8 条）一键选择
+- 安卓：内置示例模板（assets/builtin_templates/ 出厂预置机制）
+- 安卓正式分发：release 签名（keystore 离线管理）+ 单 ABI 77MB +
+  版本对齐 1.1.0 + APK 命名 PosterAgain-<version>-<type>.apk
+- 工程化：render_core 双副本同步脚本、tests/run_all.py 全量回归、GitHub Actions CI
+
 ### v3.x（2026-08）
 - 跨平台：render_core 引擎成包，Android 端（Chaquopy）端到端
 - 渲染保真：glow/渐变颜色/溢出/typographic 行距等对照 COM 真值修复

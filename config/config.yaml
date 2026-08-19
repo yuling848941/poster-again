@@ -7,7 +7,7 @@ app:
   author: AI Assistant
   description: 基于 Excel 数据批量生成 PPT 文件的工具
   name: PPT 批量生成工具
-  version: 1.0.0
+  version: 1.1.0
 image_generation:
   enabled: false
   # 字体解析策略：auto（Windows 系统优先/其他平台捆绑优先）| bundled_first | system_first

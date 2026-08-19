@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 PPT 批量生成工具 - 基于 PySide6 和 python-pptx 的桌面应用，根据 Excel 数据批量生成 PowerPoint 演示文稿。
 
-**当前版本 1.0.0**：PPT 生成使用纯 Python 的 python-pptx 库，**无需 Microsoft Office 或 WPS**（核心工作流）。仅"图片导出"这一可选功能仍需 Office 套件（通过 COM 接口），未安装时该功能不可用，其他功能正常。
+**当前版本 1.1.0**：PPT 生成与图片导出均为纯 Python（python-pptx + 内置 Pillow 渲染引擎），**无需 Microsoft Office 或 WPS**。COM 导出仅作高保真可选项（`processing.image_export_engine: office`），无 Office 时自动走内置引擎。批量生成具备单行容错（失败行跳过+单独重试）。
 
 ## 技术栈
 

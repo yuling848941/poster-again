@@ -48,7 +48,12 @@
   生成 CSV 未给含逗号金额加引号（设备解析为 '88' 属正确 CSV 行为）、
   PC 对比字典漏 ph_ 前缀导致 ph_ 整框替换被跳过（{{}} 行内剥前缀匹配不受影响）
 - [x] 5.6 PC 侧测试：test_personalize.py 12/12、test_data_rows.py 11/11
-- [ ] 5.7 （顺延 Phase B）真机批量耗时实测、release 单 ABI、渲染失败单行重试 UI
+- [x] 5.7 （顺延 Phase B）真机批量耗时实测、release 单 ABI、渲染失败单行重试 UI
+  （2026-08-19：release 单 ABI 完成——正式签名 keys/posteragain-release.jks +
+  keystore.properties（均 gitignored），assembleRelease 仅 arm64-v8a 77MB，
+  apksigner 证书 CN=PosterAgain；单行失败重试 UI 完成——AppState per-row
+  catch + retryFailedRows + RenderScreen 失败卡片。真机批量耗时实测仍待做：
+  用 dist/PosterAgain-1.1.0-release.apk 在真机安装冒烟）
 - [x] 5.8 真实业务文件端到端（10月递交贺报(3).pptx + KA递交模板.xlsx）
   （2026-08-18 完成：6 占位符识别、29 列 xlsx 4 行、5 字段精确匹配
   （ph_个险趸期判定在数据中无对应列，按设计保留原样）、4 张全渲染 ~7s；

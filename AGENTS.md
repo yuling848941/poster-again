@@ -30,7 +30,7 @@ No pytest config, no `conftest.py`, no `pyproject.toml`. Tests are standalone Py
 
 **What it does:** Desktop GUI app (PySide6) that reads Excel/CSV/JSON data and batch-generates personalized .pptx files from a template.
 
-**Current version: 1.0.0.** PPT generation AND image export are pure Python (`python-pptx` + Pillow renderer) — **no Microsoft Office or WPS needed**. The COM-based exporter (`com_image_exporter.py`) is dormant, kept only for pixel-level cross-validation in tests and calibration on machines that have PowerPoint.
+**Current version: 1.1.0.** PPT generation AND image export are pure Python (`python-pptx` + Pillow renderer) — **no Microsoft Office or WPS needed**. The COM-based exporter (`com_image_exporter.py`) is dormant, kept only for pixel-level cross-validation in tests and calibration on machines that have PowerPoint.
 
 **Cross-platform note:** the rendering engine lives in `src/render_core/` (self-contained: stdlib + python-pptx/lxml + Pillow + optional numpy for gradient text). Bundled Source Han fonts in `resources/fonts/` (SIL OFL) + per-font calibrated layout metrics in `font_registry.py`. The same package is embedded in the Android app (`android/`, Kotlin/Compose + Chaquopy). Font policy: `auto` (Windows system-first, other platforms bundled-first), override via `image_generation.font_policy` or `POSTERAGAIN_FONT_POLICY`.
 

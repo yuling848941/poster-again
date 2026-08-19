@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  unit:
+    # 仅跑 Python 单测（tests/run_all.py，默认跳过需 Office COM 的用例）。
+    # 安卓构建不入 CI：无 gradle wrapper 且 Chaquopy 依赖本机 SDK/构建环境，
+    # 仍按 AGENTS.md 本地构建流程执行。
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 全量单元测试
+        shell: cmd
+        run: python tests\run_all.py --timeout 420
+
+      - name: render_core 双副本一致性校验
+        run: python tools/sync_render_core.py --check

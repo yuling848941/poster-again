@@ -74,7 +74,7 @@ class ConfigManager(PathConfigMixin, ImageConfigMixin, PlaceholderConfigMixin,
         self.default_config = {
             "app": {
                 "name": "PPT 批量生成工具",
-                "version": "1.0.0",
+                "version": "1.1.0",
                 "author": "AI Assistant",
                 "description": "基于 Excel 数据批量生成 PPT 文件的工具"
             },
@@ -278,7 +278,7 @@ class ConfigManager(PathConfigMixin, ImageConfigMixin, PlaceholderConfigMixin,
         """
         return {
             "name": self.get("app.name", "PPT 批量生成工具"),
-            "version": self.get("app.version", "1.0.0"),
+            "version": self.get("app.version", "1.1.0"),
             "author": self.get("app.author", "AI Assistant"),
             "description": self.get("app.description", "基于 Excel 数据批量生成 PPT 文件的工具")
         }

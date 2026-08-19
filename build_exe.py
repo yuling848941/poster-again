@@ -154,24 +154,41 @@ def copy_extra_files(project_root: Path, dist_dir: Path):
 
 def create_readme(dist_dir: Path):
     """创建用户使用说明"""
-    readme_content = """PosterAgain 使用说明
+    readme_content = """PosterAgain 使用说明（v1.1.0）
 
 【快速开始】
 1. 双击 "PosterAgain.exe" 启动程序
-2. 无需安装任何额外软件（PPT 生成功能开箱即用）
+2. 无需安装 Microsoft Office、WPS 或任何其他软件，开箱即用
 3. 如遇到杀毒软件警告，请选择"允许"
 
-【功能说明】
-- PPT 批量生成：根据 Excel 数据和 PPT 模板，纯 Python 生成，无需 Office
-- 图片导出（可选）：需要安装 Microsoft Office 或 WPS Office
+【基本流程】
+1. 选择 PPT 模板文件、Excel/CSV 数据文件、输出目录
+   - "最近"按钮可直接选用上次的文件/目录，通常三步点击即可开始
+2. 点击"自动匹配"，核对模板占位符与数据列的对应关系
+3. 勾选"直接生成图片"可输出 PNG/JPG 海报（默认引擎为内置纯 Python 渲染，
+   不需要 Office）；不勾选则输出 PPT 文件
+4. 点击"批量生成"，等待完成
+
+【批量容错：单行失败不影响整批】
+- 某一行数据异常时会跳过该行并继续生成其余行，完成后弹窗列出
+  失败行（Excel 行号 + 原因）
+- 点击弹窗中的"重试失败行"可只重新生成失败的行
+
+【近似渲染提示】
+- 部分模板效果（如艺术字变形、图表、特殊字体）为近似渲染，生成完成时
+  会提示"本模板有 N 项近似渲染效果"
+- 如需与 PowerPoint 完全一致的输出，可在配置文件中把
+  processing.image_export_engine 设为 office（需要本机安装 Office）
 
 【注意事项】
-- 程序首次运行会在 exe 同目录生成隐藏配置文件
+- 程序首次运行会在 exe 同目录生成隐藏配置文件（路径记忆等状态）
 - 支持 Windows 10/11 操作系统
+- 更新版本：用新版 exe 直接覆盖旧文件即可，配置与最近使用记录保留
 
 【故障排除】
 - 如果程序无法启动，请以管理员身份运行
-- 如遇问题，请联系技术支持
+- 生成的图片缺少部分效果？属近似渲染范围，见上方"近似渲染提示"
+- 如遇其他问题，请联系技术支持
 """
     readme_file = dist_dir / "使用说明.txt"
     readme_file.write_text(readme_content, encoding="utf-8")

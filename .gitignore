@@ -106,8 +106,9 @@ experiments/out/
 experiments/reference/
 experiments/reference2/
 
-# 例外：安卓 App 内置测试模板是源码一部分（克隆后需完整）
+# 例外：安卓 App 内置模板是源码一部分（克隆后需完整，含 builtin_templates/）
 !android/app/src/main/assets/*.pptx
+!android/app/src/main/assets/builtin_templates/*.pptx
 
 # 例外：文档配图截图（docx 生成素材）
 !docs/shots/*.png
