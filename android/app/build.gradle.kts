@@ -1,7 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.chaquo.python")
+}
+
+// release 构建任务 → 单 ABI（arm64 真机分发，77MB）；
+// 其他（assembleDebug/IDE 同步）→ 双 ABI（x86_64 供模拟器 E2E）。
+// Chaquopy 要求 abiFilters 在 defaultConfig，buildType 级设置对其无效，
+// 故按任务名在此切换（跑 "build" 生命周期任务时两变体都是双 ABI，安全但更大）。
+val releaseOnlyBuild = gradle.startParameter.taskNames.any {
+    it.contains("Release", ignoreCase = true)
 }
 
 android {
@@ -12,23 +22,40 @@ android {
         applicationId = "com.posteragain.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.1.0"
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += if (releaseOnlyBuild) listOf("arm64-v8a")
+                          else listOf("arm64-v8a", "x86_64")
         }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true   // 供设置页等读取 VERSION_NAME
+    }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
 
     signingConfigs {
-        // 无正式证书：release 暂用 debug 签名，便于分发安装；发布应用商店前替换为正式 keystore
+        // 正式签名读 android/keystore.properties（gitignored，不入库）；
+        // 文件缺失时回退 debug 签名，保证无证书环境也能构建。
+        // ⚠ keystore + 口令必须离线备份，丢失则无法同签名覆盖升级！
         create("release") {
-            storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            val ksProps = Properties()
+            val ksFile = rootProject.file("keystore.properties")
+            if (ksFile.exists()) {
+                ksFile.inputStream().use { ksProps.load(it) }
+                storeFile = rootProject.file(ksProps.getProperty("storeFile"))
+                storePassword = ksProps.getProperty("storePassword")
+                keyAlias = ksProps.getProperty("keyAlias")
+                keyPassword = ksProps.getProperty("keyPassword")
+            } else {
+                println("[签名警告] 未找到 keystore.properties，release 回退 debug 签名（仅限自用/测试）")
+                storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
     }
 
@@ -46,6 +73,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
     packagingOptions {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    }
+    applicationVariants.all {
+        val variant = this
+        outputs.all {
+            (this as? com.android.build.gradle.internal.api.BaseVariantOutputImpl)?.outputFileName =
+                "PosterAgain-${variant.versionName}-${variant.buildType.name}.apk"
+        }
     }
 }
 

@@ -141,12 +141,13 @@ def main():
     tpl_file = sys.argv[2] if len(sys.argv) > 2 else "batch_tpl.pptx"
     repo = HERE.parent
     # 安装最新构建的 debug APK（避免对旧包跑 E2E 得出错误结论）
-    apk = HERE / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
-    if apk.exists():
-        print("[0] 安装最新 debug APK")
+    apk_dir = HERE / "app" / "build" / "outputs" / "apk" / "debug"
+    apk = next(iter(sorted(apk_dir.glob("*-debug.apk"), reverse=True)), None)
+    if apk is not None:
+        print(f"[0] 安装最新 debug APK: {apk.name}")
         sh("install", "-r", str(apk))
     else:
-        print(f"[0] [警告] 未找到 {apk}，使用设备上已安装的版本")
+        print(f"[0] [警告] {apk_dir} 下未找到 *-debug.apk，使用设备上已安装的版本")
     sh("push", str(repo / data_file), "/sdcard/Download/")
     sh("push", str(repo / tpl_file), "/sdcard/Download/")
     sh("shell", "pm", "clear", PKG)      # 清旧会话/产物/记录

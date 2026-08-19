@@ -15,3 +15,10 @@ __pycache__/
 
 # 构建日志
 *.log
+
+# Release 签名密钥（绝不入库！jks + properties 必须离线备份，
+# 丢失 = 无法同签名覆盖升级，用户只能卸载重装）
+keys/
+keystore.properties
+*.jks
+*.keystore

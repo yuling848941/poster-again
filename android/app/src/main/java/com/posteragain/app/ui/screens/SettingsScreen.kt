@@ -44,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.posteragain.app.AppState
+import com.posteragain.app.BuildConfig
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -210,6 +211,6 @@ private fun appVersion(): String {
                 SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
                     .format(Date(pi.lastUpdateTime))
             }）"
-        }.getOrDefault("0.1.0")
+        }.getOrDefault("v${BuildConfig.VERSION_NAME}")
     }
 }
