@@ -206,7 +206,15 @@ class MainWindow(QMainWindow):
         template_browse_btn.setStyleSheet(ButtonStyles.secondary_style())
         template_browse_btn.clicked.connect(self.browse_template_file)
         template_layout.addWidget(template_browse_btn)
-        
+
+        template_recent_btn = QPushButton("最近")
+        template_recent_btn.setStyleSheet(ButtonStyles.secondary_style())
+        template_recent_btn.setToolTip("从最近使用的模板中快速选择")
+        template_recent_btn.clicked.connect(
+            lambda: self.show_recent_menu('template', self.template_path_edit,
+                                          self.worker_thread.set_template_path))
+        template_layout.addWidget(template_recent_btn)
+
         template_group.setLayout(template_layout)
         layout.addWidget(template_group)
         
@@ -225,7 +233,15 @@ class MainWindow(QMainWindow):
         data_browse_btn.setStyleSheet(ButtonStyles.secondary_style())
         data_browse_btn.clicked.connect(self.browse_data_file)
         data_layout.addWidget(data_browse_btn)
-        
+
+        data_recent_btn = QPushButton("最近")
+        data_recent_btn.setStyleSheet(ButtonStyles.secondary_style())
+        data_recent_btn.setToolTip("从最近使用的数据文件中快速选择")
+        data_recent_btn.clicked.connect(
+            lambda: self.show_recent_menu('data', self.data_path_edit,
+                                          self.worker_thread.set_data_path))
+        data_layout.addWidget(data_recent_btn)
+
         data_group.setLayout(data_layout)
         layout.addWidget(data_group)
         
@@ -244,7 +260,15 @@ class MainWindow(QMainWindow):
         output_browse_btn.setStyleSheet(ButtonStyles.secondary_style())
         output_browse_btn.clicked.connect(self.browse_output_dir)
         output_layout.addWidget(output_browse_btn)
-        
+
+        output_recent_btn = QPushButton("最近")
+        output_recent_btn.setStyleSheet(ButtonStyles.secondary_style())
+        output_recent_btn.setToolTip("从最近使用的输出目录中快速选择")
+        output_recent_btn.clicked.connect(
+            lambda: self.show_recent_menu('output', self.output_path_edit,
+                                          self.worker_thread.set_output_path))
+        output_layout.addWidget(output_recent_btn)
+
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
         
@@ -698,6 +722,50 @@ class MainWindow(QMainWindow):
 
         # 设置自动匹配标志为True
         self.auto_match_executed = True
+
+    def _collect_matching_rules_from_table(self):
+        """从匹配表格收集匹配规则与文本增加规则（批量生成/失败行重试共用）"""
+        matching_rules = {}
+        text_addition_rules = {}
+
+        for row in range(self.match_table.rowCount()):
+            placeholder_item = self.match_table.item(row, 0)
+            data_column_item = self.match_table.item(row, 1)
+            if placeholder_item and data_column_item:
+                placeholder = placeholder_item.text()
+                data_column = data_column_item.text()
+
+                # 检查是否是自定义文本（新的格式：[原始列名] 前缀:xxx 后缀:xxx）
+                if data_column.startswith("[") and "]" in data_column:
+                    # 提取方括号中的原始列名和自定义文本信息
+                    bracket_end = data_column.find("]")
+                    original_column = data_column[1:bracket_end]  # 提取方括号中的内容
+                    custom_text = data_column[bracket_end + 2:]  # 移除"[列名] "前缀
+
+                    # 解析前缀和后缀
+                    prefix = ""
+                    suffix = ""
+
+                    if "前缀:" in custom_text:
+                        prefix_start = custom_text.find("前缀:") + 3
+                        prefix_end = custom_text.find(" ", prefix_start) if " " in custom_text[prefix_start:] else len(custom_text)
+                        prefix = custom_text[prefix_start:prefix_end]
+
+                    if "后缀:" in custom_text:
+                        suffix_start = custom_text.find("后缀:") + 3
+                        suffix_end = custom_text.find(" ", suffix_start) if " " in custom_text[suffix_start:] else len(custom_text)
+                        suffix = custom_text[suffix_start:suffix_end]
+
+                    # 设置匹配规则为原始列名
+                    if original_column and original_column != "自定义":
+                        matching_rules[placeholder] = original_column
+                        # 添加文本增加规则
+                        text_addition_rules[placeholder] = {"prefix": prefix, "suffix": suffix}
+                elif data_column:  # 普通匹配
+                    matching_rules[placeholder] = data_column
+
+        return matching_rules, text_addition_rules
+
     def batch_generate(self):
         """批量生成PPT或图片"""
         template_path = self.template_path_edit.text()
@@ -762,44 +830,11 @@ class MainWindow(QMainWindow):
             logger.info("将生成PPT文件")
 
         # 收集匹配规则和文本增加规则
-        matching_rules = {}
-        text_addition_rules = {}  # 新增：文本增加规则
+        matching_rules, text_addition_rules = self._collect_matching_rules_from_table()
 
-        for row in range(self.match_table.rowCount()):
-            placeholder_item = self.match_table.item(row, 0)
-            data_column_item = self.match_table.item(row, 1)
-            if placeholder_item and data_column_item:
-                placeholder = placeholder_item.text()
-                data_column = data_column_item.text()
-
-                # 检查是否是自定义文本（新的格式：[原始列名] 前缀:xxx 后缀:xxx）
-                if data_column.startswith("[") and "]" in data_column:
-                    # 提取方括号中的原始列名和自定义文本信息
-                    bracket_end = data_column.find("]")
-                    original_column = data_column[1:bracket_end]  # 提取方括号中的内容
-                    custom_text = data_column[bracket_end + 2:]  # 移除"[列名] "前缀
-
-                    # 解析前缀和后缀
-                    prefix = ""
-                    suffix = ""
-
-                    if "前缀:" in custom_text:
-                        prefix_start = custom_text.find("前缀:") + 3
-                        prefix_end = custom_text.find(" ", prefix_start) if " " in custom_text[prefix_start:] else len(custom_text)
-                        prefix = custom_text[prefix_start:prefix_end]
-
-                    if "后缀:" in custom_text:
-                        suffix_start = custom_text.find("后缀:") + 3
-                        suffix_end = custom_text.find(" ", suffix_start) if " " in custom_text[suffix_start:] else len(custom_text)
-                        suffix = custom_text[suffix_start:suffix_end]
-
-                    # 设置匹配规则为原始列名
-                    if original_column and original_column != "自定义":
-                        matching_rules[placeholder] = original_column
-                        # 添加文本增加规则
-                        text_addition_rules[placeholder] = {"prefix": prefix, "suffix": suffix}
-                elif data_column:  # 普通匹配
-                    matching_rules[placeholder] = data_column
+        # 新的全量任务：清除失败行重试状态
+        self.worker_thread.set_retry_rows(None)
+        self._last_failed_rows = []
 
         self.worker_thread.set_matching_rules(matching_rules)
         self.worker_thread.set_text_addition_rules(text_addition_rules)  # 新增：设置文本增加规则
@@ -1221,15 +1256,71 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"承保趸期数据输入失败：{str(e)}")
 
-    def on_generation_completed(self, count):
-        """生成完成后的处理"""
+    def on_generation_completed(self, summary):
+        """生成完成后的处理（summary 为 worker 传入的结果摘要 dict）"""
         self.progress_label.setText("完成")
+
+        # 兼容旧式纯成功计数参数
+        if isinstance(summary, int):
+            summary = {"success": summary, "failed": [], "total": summary,
+                       "is_retry": False, "precheck": []}
 
         # 检查是否是图片生成模式
         generate_images = self.direct_image_checkbox.isChecked()
         file_type = "图片" if generate_images else "PPT"
 
-        QMessageBox.information(self, "完成", f"{file_type}批量生成完成！成功生成 {count} 个文件")
+        success = summary.get("success", 0)
+        failed = summary.get("failed", [])
+        total = summary.get("total", success + len(failed))
+        is_retry = summary.get("is_retry", False)
+        precheck = summary.get("precheck", [])
+
+        # 记录失败明细与本次输出目录，供"重试失败行"复用同一目录
+        self._last_failed_rows = failed
+        self._last_batch_output_path = self.worker_thread.output_path
+
+        if failed:
+            title = "重试完成" if is_retry else "生成完成（部分失败）"
+            lines = [f"成功 {success} / {total}，失败 {len(failed)} 行：", ""]
+            for f in failed[:5]:
+                lines.append(f"  第 {f['row_number']} 行（{f['name']}）: {f['error'][:80]}")
+            if len(failed) > 5:
+                lines.append(f"  ……等共 {len(failed)} 行")
+            lines.append("")
+            lines.append("数据行的异常不影响其他行，可点击下方按钮只重试失败的行。")
+            text = "\n".join(lines)
+        else:
+            title = "完成"
+            prefix = "失败行重试完成，" if is_retry else ""
+            text = f"{prefix}{file_type}批量生成完成！成功生成 {success} 个文件"
+
+        # 预检提示：近似渲染效果知情告知（按问题码归并展示）
+        if precheck:
+            by_code = {}
+            for issue in precheck:
+                by_code.setdefault(issue["code"], []).append(issue)
+            text += (f"\n\n⚠ 本模板有 {len(precheck)} 项近似渲染效果，"
+                     f"导出图片与 PowerPoint 打开效果可能略有差异：")
+            for code, issues in list(by_code.items())[:6]:
+                first = issues[0]
+                extra = f"（共 {len(issues)} 处）" if len(issues) > 1 else ""
+                text += f"\n  · 第{first['slide']}页 {first['message']}{extra}"
+            if len(by_code) > 6:
+                text += f"\n  ……等 {len(by_code)} 类问题"
+            text += "\n如需完全一致，可将图片导出引擎切换为 Office 高保真导出（配置项 processing.image_export_engine）。"
+
+        retry_requested = False
+        if failed:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle(title)
+            box.setText(text)
+            retry_btn = box.addButton("重试失败行", QMessageBox.AcceptRole)
+            box.addButton("关闭", QMessageBox.RejectRole)
+            box.exec()
+            retry_requested = (box.clickedButton() is retry_btn)
+        else:
+            QMessageBox.information(self, title, text)
 
         # 重新初始化模板处理器（内部会关闭旧处理器并释放资源）
         try:
@@ -1244,6 +1335,54 @@ class MainWindow(QMainWindow):
         # 重新启用按钮
         self.auto_match_btn.setEnabled(True)
         self.batch_generate_btn.setEnabled(True)
+
+        # 资源清理完成后才启动重试，避免与工作线程竞争模板处理器
+        if retry_requested:
+            self.retry_failed_rows()
+
+    def retry_failed_rows(self):
+        """仅重新生成上一次批量中失败的数据行（输出到同一目录）"""
+        if not getattr(self, '_last_failed_rows', None):
+            QMessageBox.information(self, "提示", "没有可重试的失败行")
+            return
+        if not getattr(self, '_last_batch_output_path', ''):
+            QMessageBox.warning(self, "警告", "缺少上次输出目录信息，请重新执行批量生成")
+            return
+
+        template_path = self.template_path_edit.text()
+        data_path = self.data_path_edit.text()
+        if not template_path or not data_path:
+            QMessageBox.warning(self, "警告", "模板或数据文件路径已变化，请重新执行批量生成")
+            return
+
+        matching_rules, text_addition_rules = self._collect_matching_rules_from_table()
+
+        generate_images = self.direct_image_checkbox.isChecked()
+        image_format = "PNG"
+        image_quality = 1.0
+        if generate_images:
+            image_format = self.image_format_combo.currentText()
+            image_quality = self.settings_manager.quality_text_to_value(
+                self.image_quality_combo.currentText()
+            )
+
+        self.worker_thread.set_template_path(template_path)
+        self.worker_thread.set_data_path(data_path)
+        self.worker_thread.set_output_path(self._last_batch_output_path)
+        self.worker_thread.set_matching_rules(matching_rules)
+        self.worker_thread.set_text_addition_rules(text_addition_rules)
+        self.worker_thread.set_image_generation_params(generate_images, image_format, image_quality)
+        if hasattr(self, 'message_template_edit'):
+            self.worker_thread.set_message_template(self.message_template_edit.toPlainText().strip())
+        self.worker_thread.set_retry_rows([f["index"] for f in self._last_failed_rows])
+
+        # 禁用按钮，防止重复点击
+        self.auto_match_btn.setEnabled(False)
+        self.batch_generate_btn.setEnabled(False)
+        self.progress_label.setText("正在重试失败行...")
+
+        logger.info(f"开始重试失败行：{len(self._last_failed_rows)} 行，输出目录: {self._last_batch_output_path}")
+        self.worker_thread.start_batch_generate()
         
     def show_error(self, message):
         """显示错误消息"""
@@ -1274,6 +1413,37 @@ class MainWindow(QMainWindow):
             self.worker_thread.set_data_path,
             self.worker_thread.set_output_path,
         )
+
+    def show_recent_menu(self, file_type, edit_widget, setter_func):
+        """弹出最近使用列表（模板/数据/输出三处"最近"按钮共用）"""
+        recents = self.path_manager.get_recents(file_type)
+        valid = [p for p in recents if os.path.exists(p)]
+        if len(valid) != len(recents):
+            self.path_manager.prune_recents(file_type, valid)
+
+        menu = QMenu(self)
+        if not valid:
+            empty = menu.addAction("（暂无最近使用记录）")
+            empty.setEnabled(False)
+        else:
+            for path in valid:
+                label = path if file_type == 'output' else os.path.basename(path)
+                action = menu.addAction(label)
+                action.setToolTip(path)
+                action.triggered.connect(
+                    lambda checked, p=path: self._apply_recent_path(
+                        file_type, p, edit_widget, setter_func))
+        menu.exec(QCursor.pos())
+
+    def _apply_recent_path(self, file_type, path, edit_widget, setter_func):
+        """从最近列表选定路径：填入输入框、同步 worker、并置顶该记录"""
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "路径无效", f"路径已不存在：\n{path}")
+            return
+        edit_widget.setText(path)
+        if setter_func:
+            setter_func(path)
+        self.path_manager.add_recent(file_type, path)
 
     def restore_path_to_edit(self, path: str, edit_widget, setter_func):
         """将路径恢复到输入框并设置到工作线程 (委托给 PathManager)"""

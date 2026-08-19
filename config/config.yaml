@@ -31,6 +31,10 @@ paths:
   last_data_dir: ''
   last_output_dir: ''
   last_template_dir: ''
+  # 最近使用列表（MRU，上限 8 条，失效项自动清理）
+  recent_templates: []
+  recent_data_files: []
+  recent_output_dirs: []
 processing:
   auto_save: true
   backup_files: true

@@ -100,7 +100,10 @@ class ConfigManager(PathConfigMixin, ImageConfigMixin, PlaceholderConfigMixin,
                 "last_output_dir": "",
                 "default_output_dir": "./output",
                 "last_config_save_dir": "",
-                "last_config_load_dir": ""
+                "last_config_load_dir": "",
+                "recent_templates": [],
+                "recent_data_files": [],
+                "recent_output_dirs": []
             },
             "matching": {
                 "auto_match": True,

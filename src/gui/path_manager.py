@@ -73,7 +73,7 @@ class PathManager:
 
     def save_path_on_select(self, file_type, file_path):
         """
-        选择文件后自动保存路径
+        选择文件后自动保存路径（上次路径 + 最近使用列表）
 
         Args:
             file_type: 'template', 'data', 或 'output'
@@ -84,3 +84,26 @@ class PathManager:
             self.config_manager.update_last_paths(**kwargs)
         except Exception as e:
             logger.warning(f"保存路径失败: {e}")
+        self.add_recent(file_type, file_path)
+
+    def add_recent(self, file_type, file_path):
+        """把路径加入最近使用列表（不存在则忽略）"""
+        try:
+            self.config_manager.update_recent_path(file_type, file_path)
+        except Exception as e:
+            logger.warning(f"保存最近使用失败: {e}")
+
+    def get_recents(self, file_type):
+        """读取最近使用列表（新→旧，不校验存在性）"""
+        try:
+            return self.config_manager.load_recent_paths(file_type)
+        except Exception as e:
+            logger.warning(f"读取最近使用失败: {e}")
+            return []
+
+    def prune_recents(self, file_type, keep_paths):
+        """清理失效项后整体覆写最近使用列表"""
+        try:
+            self.config_manager.save_recent_paths(file_type, keep_paths)
+        except Exception as e:
+            logger.warning(f"清理最近使用列表失败: {e}")

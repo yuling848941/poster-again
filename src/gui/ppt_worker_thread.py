@@ -19,7 +19,7 @@ class PPTWorkerThread(QThread):
     progress_updated = Signal(int, str)  # 进度值，状态文本
     log_message = Signal(str)  # 日志消息
     match_completed = Signal(list, list, dict)  # 占位符列表，数据列列表，匹配规则
-    generation_completed = Signal(int)  # 生成的文件数量
+    generation_completed = Signal(object)  # BatchResult 摘要 dict（成功数/失败明细/预检提示）
     error_occurred = Signal(str)  # 错误消息
 
     def __init__(self, office_manager=None, main_window=None):
@@ -39,6 +39,12 @@ class PPTWorkerThread(QThread):
         self.image_format = "PNG"  # 新增：图片格式
         self.image_quality = 1.0  # 图片缩放倍数 (1.0/2.0/3.0)
         self.message_template = ""  # 新增：贺语模板
+        self.retry_row_indices = None  # 失败行重试：只跑指定 DataFrame 行标签；None = 全部
+        self._was_retry = False  # 本次 batch_generate 是否为重试任务
+
+    def set_retry_rows(self, row_indices):
+        """设置失败行重试（只重新生成指定行；None 恢复全量）"""
+        self.retry_row_indices = list(row_indices) if row_indices else None
         
     def set_template_path(self, path):
         """设置模板文件路径"""
@@ -158,6 +164,8 @@ class PPTWorkerThread(QThread):
             
     def batch_generate(self):
         """批量生成PPT或图片"""
+        # 记录本次是否为失败行重试任务（emit 摘要时已清空重试状态）
+        self._was_retry = self.retry_row_indices is not None
         try:
             # 获取PPT生成器（延迟初始化）
             ppt_generator = self.get_ppt_generator()
@@ -274,18 +282,45 @@ class PPTWorkerThread(QThread):
                 self.progress_updated.emit(progress, f"生成中: {message}")
                 self.log_message.emit(f"进度: {current}/{total} - {message}")
 
-            # 批量生成
-            success_count = ppt_generator.batch_generate(
+            # 批量生成（retry_row_indices 非 None 时只重跑失败行）
+            result = ppt_generator.batch_generate(
                 self.output_path,
                 progress_callback=progress_callback,
                 generate_images=self.generate_images,
                 image_format=self.image_format,
-                image_quality=self.image_quality
+                image_quality=self.image_quality,
+                row_indices=self.retry_row_indices
             )
 
+            # 重试任务完成后恢复全量语义（worker 是复用实例）
+            self.retry_row_indices = None
+
             self.progress_updated.emit(100, "生成完成")
-            self.generation_completed.emit(success_count)
-            self.log_message.emit(f"批量生成完成，成功生成 {success_count} 个{file_type}文件")
+            summary = {
+                "success": int(result.success_count),
+                "failed": [{
+                    "index": f.index,
+                    "row_number": f.row_number,
+                    "name": f.name,
+                    "stage": f.stage,
+                    "error": f.error,
+                } for f in result.failed_rows],
+                "total": int(result.total),
+                "is_retry": self._was_retry,
+                "precheck": [{
+                    "slide": issue.slide,
+                    "shape": issue.shape,
+                    "code": issue.code,
+                    "message": issue.message,
+                } for issue in result.precheck_issues],
+            }
+            self.generation_completed.emit(summary)
+            if summary["failed"]:
+                self.log_message.emit(
+                    f"批量生成结束：成功 {summary['success']}/{summary['total']}，"
+                    f"失败 {len(summary['failed'])} 行")
+            else:
+                self.log_message.emit(f"批量生成完成，成功生成 {summary['success']} 个{file_type}文件")
 
         except Exception as e:
             self.error_occurred.emit(f"批量生成过程中发生错误: {str(e)}")

@@ -33,6 +33,14 @@ def _get_program_dir() -> str:
 class PathConfigMixin:
     """路径配置混合类，提供路径相关的配置管理功能"""
 
+    # 最近使用列表（MRU）：每类型上限、键映射
+    RECENT_KEY_MAP = {
+        'template': 'paths.recent_templates',
+        'data': 'paths.recent_data_files',
+        'output': 'paths.recent_output_dirs',
+    }
+    RECENT_LIMIT = 8
+
     def update_last_paths(self, template_dir: str = None, data_dir: str = None, output_dir: str = None):
         """
         更新最近使用的路径
@@ -82,6 +90,55 @@ class PathConfigMixin:
                 'data_dir': '',
                 'output_dir': ''
             }
+
+    def update_recent_path(self, file_type: str, path: str) -> None:
+        """
+        把路径加入最近使用列表头部（去重、限长、立即持久化）
+
+        Args:
+            file_type: 'template' | 'data' | 'output'
+            path: 文件/目录路径（不存在则忽略）
+        """
+        key = self.RECENT_KEY_MAP.get(file_type)
+        if not key or not path or not self.validate_path(path):
+            return
+        try:
+            recents = [p for p in (self.get(key, []) or []) if p != path]
+            recents.insert(0, path)
+            self.set(key, recents[:self.RECENT_LIMIT])
+            self.save_config()
+        except Exception as e:
+            logger.warning(f"更新最近使用列表失败：{e}")
+
+    def load_recent_paths(self, file_type: str) -> list:
+        """
+        读取最近使用列表（新→旧）
+
+        Args:
+            file_type: 'template' | 'data' | 'output'
+
+        Returns:
+            list: 路径列表（无记录时为空列表）
+        """
+        key = self.RECENT_KEY_MAP.get(file_type)
+        if not key:
+            return []
+        try:
+            return list(self.get(key, []) or [])
+        except Exception as e:
+            logger.warning(f"读取最近使用列表失败：{e}")
+            return []
+
+    def save_recent_paths(self, file_type: str, paths: list) -> None:
+        """整体覆写最近使用列表（用于清理失效项）"""
+        key = self.RECENT_KEY_MAP.get(file_type)
+        if not key:
+            return
+        try:
+            self.set(key, list(paths)[:self.RECENT_LIMIT])
+            self.save_config()
+        except Exception as e:
+            logger.warning(f"保存最近使用列表失败：{e}")
 
     def get_start_dir_for_file_type(self, file_type: str) -> str:
         """
