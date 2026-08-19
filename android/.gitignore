@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# 本机 SDK 路径（每台机器不同）
+local.properties
+
+# IDE
+.idea/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 构建日志
+*.log
