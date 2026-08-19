@@ -50,6 +50,7 @@ def style_run(run, sz=2800, color='000000'):
 def build_test_pptx():
     """合成：anchor居中 / anchor底部 / normAutofit缩字 / 描边 / 裁剪图"""
     prs = Presentation()
+    prs.slide_height = Inches(11)   # 加高画布给溢出用例留检测空间
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
     from pptx.oxml.ns import qn
@@ -104,6 +105,37 @@ def build_test_pptx():
     pic = slide.shapes.add_picture(img_file, Inches(5), Inches(1.6), Inches(2), Inches(1))
     etree.SubElement(pic._element.find(qn('p:blipFill')), f'{{{A}}}srcRect',
                      {'r': '50000'})
+
+    # 6) glow 发光：黑字红光（rad 18pt alpha 40%），光晕应外扩到字形之外
+    # （放在 y=6.8in 空区，避免光晕污染 normAutofit 断言区域）
+    tb = slide.shapes.add_textbox(Inches(5), Inches(6.8), Inches(3), Inches(1.4))
+    tb.text_frame.word_wrap = True
+    run = tb.text_frame.paragraphs[0].add_run()
+    run.text = '发光字'
+    rPr = run._r.get_or_add_rPr()
+    rPr.set('sz', '7200')
+    rPr.set('b', '1')
+    rPr.append(etree.fromstring(
+        f'<a:solidFill xmlns:a="{A}"><a:srgbClr val="000000"/></a:solidFill>'))
+    rPr.append(etree.fromstring(f'<a:latin xmlns:a="{A}" typeface="微软雅黑"/>'))
+    rPr.append(etree.fromstring(
+        f'<a:effectLst xmlns:a="{A}"><a:glow rad="228600">'
+        f'<a:srgbClr val="FF0000"><a:alpha val="40000"/></a:srgbClr>'
+        f'</a:glow></a:effectLst>'))
+
+    # 7) 渐变溢出：小框(1in) + 72pt 渐变大字 -> 溢出部分应为渐变端点延伸色（非黑）
+    tb = slide.shapes.add_textbox(Inches(0.5), Inches(8.2), Inches(2), Inches(1))
+    run = tb.text_frame.paragraphs[0].add_run()
+    run.text = '渐变溢出测试'
+    rPr = run._r.get_or_add_rPr()
+    rPr.set('sz', '7200')
+    rPr.set('b', '1')
+    rPr.append(etree.fromstring(
+        f'<a:gradFill xmlns:a="{A}"><a:gsLst>'
+        f'<a:gs pos="0"><a:prstClr val="white"/></a:gs>'
+        f'<a:gs pos="100000"><a:srgbClr val="F9CE6F"/></a:gs>'
+        f'</a:gsLst><a:lin ang="18900000" scaled="1"/></a:gradFill>'))
+    rPr.append(etree.fromstring(f'<a:latin xmlns:a="{A}" typeface="微软雅黑"/>'))
 
     path = os.path.join(tempfile.mkdtemp(prefix='feat_'), 'feat.pptx')
     prs.save(path)
@@ -173,6 +205,42 @@ def main():
     sub2 = arr[py0:py0 + 96, px0:px0 + 192]
     check('裁剪后为红色（左半保留）',
           sub2[:, :, 0].mean() > 200 and sub2[:, :, 2].mean() < 60)
+
+    print("=" * 60)
+    print("(5) glow 发光（黑字红光 rad=18pt，光晕外扩到字形外）")
+    gx0, gy0 = int(5 * 96), int(6.8 * 96)
+    region = arr[gy0:gy0 + 134, gx0:gx0 + 3 * 96].astype(int)
+    # 黑字区域（有墨迹）
+    black_ink = (region.sum(axis=2) < 180).sum()
+    # 红光：红通道显著高于绿蓝（非黑白像素即来自 glow）
+    reddish = ((region[:, :, 0] - region[:, :, 1] > 25) &
+               (region[:, :, 0] - region[:, :, 2] > 25)).sum()
+    # 字形 bbox 之外的环带：字宽约 3 字 ×96px + 光晕，框左缘外侧 30px 应仍是白色
+    # （光晕 24px@96dpi 不该越出框太多——这里只验证内部红光与黑字并存）
+    check(f'存在红色光晕像素 {reddish} > 300', reddish > 300)
+    check(f'存在黑色字形像素 {black_ink} > 500', black_ink > 500)
+    # 预检不应再报 glow 不支持
+    issues = PillowImageExporter().precheck(path)
+    check('预检无 TEXT_EFFECTS/glow 项',
+          not any(i.code == 'TEXT_EFFECTS' and 'glow' in i.message for i in issues))
+
+    print("=" * 60)
+    print("(6) 渐变溢出（小框大字，框外应为端点延伸色非黑）")
+    # 框 x0.5-2.5in y6.8-7.8in；72pt 字溢出到框下方
+    gx0, gy0 = int(0.5 * 96), int(8.2 * 96)
+    sub = arr[gy0:gy0 + int(2.2 * 96), gx0:gx0 + int(3 * 96)].astype(int)
+    inside = sub[:int(1.0 * 96)]     # 框内
+    below = sub[int(1.05 * 96):]     # 框下溢出区
+    def ink_stats(z):
+        m = np.abs(z - 255).sum(axis=2) > 30
+        return m, (z[m].mean(axis=0) if m.any() else None)
+    mi, ci = ink_stats(inside)
+    mb_, cb = ink_stats(below)
+    check(f'框内有渐变字 均色={None if ci is None else ci.round(0)}', ci is not None)
+    check(f'框外溢出存在 均色={None if cb is None else cb.round(0)}', mb_.sum() > 100)
+    if cb is not None:
+        # 端点延伸色应为亮白金（各通道>200），绝不能是黑/灰
+        check(f'溢出区非黑（均色 {cb.round(0)}）', cb.min() > 200)
 
     print("=" * 60)
     print(f"结果: {PASS} 通过, {FAIL} 失败")

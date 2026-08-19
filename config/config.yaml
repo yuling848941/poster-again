@@ -10,6 +10,8 @@ app:
   version: 1.0.0
 image_generation:
   enabled: false
+  # 字体解析策略：auto（Windows 系统优先/其他平台捆绑优先）| bundled_first | system_first
+  font_policy: auto
   format: PNG
   quality: 1.0
 matching:
@@ -34,6 +36,7 @@ processing:
   backup_files: true
   max_undo_steps: 10
   use_com_interface: false
+  image_export_engine: auto
 ui:
   language: zh_CN
   remember_window_state: true

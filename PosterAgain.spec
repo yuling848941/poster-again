@@ -79,6 +79,7 @@ a = Analysis(
     hiddenimports=[
         'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'PySide6.QtNetwork',
         'pandas', 'openpyxl', 'pptx', 'numpy', 'yaml', 'psutil',
+        'fontTools', 'fontTools.ttLib',
     ],
     hookspath=[],
     hooksconfig={},

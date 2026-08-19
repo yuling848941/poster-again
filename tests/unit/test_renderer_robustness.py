@@ -20,13 +20,11 @@ from pptx.util import Inches
 A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
 
 try:
-    from src.core.processors.pillow_image_exporter import (
-        PillowImageExporter, _FONT_FILES,
-    )
+    from src.core.processors.pillow_image_exporter import PillowImageExporter
+    from src.core.processors import font_registry
 except ImportError:
-    from core.processors.pillow_image_exporter import (
-        PillowImageExporter, _FONT_FILES,
-    )
+    from core.processors.pillow_image_exporter import PillowImageExporter
+    from core.processors import font_registry
 
 PASS = 0
 FAIL = 0
@@ -135,9 +133,12 @@ def main():
     print("=" * 60)
     print("(2) 字体缺失兜底（不崩溃、有告警、正常渲染）")
     fake = r'C:\Windows\Fonts\__not_exist_font__.ttf'
-    saved = {k: v for k, v in _FONT_FILES.items() if k[0] == '楷体'}
+    # 模拟楷体系统字体缺失：把注册表系统表中楷体项指向不存在文件
+    # （楷体无捆绑等价族，解析将回退默认微软雅黑并告警——正是本测试要验证的兜底）
+    saved = {k: v for k, v in font_registry.SYSTEM_FONT_FILES.items()
+             if k[0] == '楷体'}
     for k in saved:
-        _FONT_FILES[k] = fake
+        font_registry.SYSTEM_FONT_FILES[k] = fake
     try:
         # 用楷体构造文字
         prs = Presentation()
@@ -161,7 +162,7 @@ def main():
         check(f'缺失字体导出异常: {e}', False)
     finally:
         for k, v in saved.items():
-            _FONT_FILES[k] = v
+            font_registry.SYSTEM_FONT_FILES[k] = v
 
     print("=" * 60)
     print(f"结果: {PASS} 通过, {FAIL} 失败")

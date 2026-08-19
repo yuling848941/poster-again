@@ -528,9 +528,10 @@ class PPTXProcessor(ITemplateProcessor):
             except ImportError:
                 from core.processors.pillow_image_exporter import PillowImageExporter
 
-            exporter = PillowImageExporter()
-
-            logger.info(f"使用 {exporter.get_engine_info()} 导出图片")
+            engine, exporter = self._pick_image_engine()
+            info = (exporter.get_office_info() if engine == 'office'
+                    else exporter.get_engine_info())
+            logger.info(f"图片导出引擎: {engine}（{info}）")
 
             # 先保存当前演示文稿到临时文件
             # 使用带缓冲的临时文件，确保数据完全写入
@@ -549,8 +550,9 @@ class PPTXProcessor(ITemplateProcessor):
             time.sleep(0.1)
 
             try:
-                # 直接透传缩放倍数（float）给 COM 导出器
-                generated_files = exporter.export_to_images(temp_path, output_dir, format, quality)
+                # 导出引擎（纯 Python / COM），COM 失败时按策略降级
+                generated_files = self._export_with_engine(
+                    exporter, temp_path, output_dir, format, quality)
 
                 # 如果指定了基础文件名，重命名生成的图片
                 if base_filename and generated_files:
@@ -588,6 +590,69 @@ class PPTXProcessor(ITemplateProcessor):
         except Exception as e:
             logger.error(f"导出图片时出错: {e}")
             return []
+
+    # ---------------- 图片导出引擎分层（COM 优先/纯 Python 兜底）----------------
+
+    @staticmethod
+    def _image_engine_config() -> str:
+        """导出引擎策略：'auto'（COM 可用则用，否则纯 Python）| 'office' | 'python'
+        来源：环境变量 POSTERAGAIN_IMAGE_ENGINE > config processing.image_export_engine
+        > 旧键 use_com_interface(true->office)。缺省 auto。"""
+        import os
+        env = os.environ.get('POSTERAGAIN_IMAGE_ENGINE')
+        if env and env.strip().lower() in ('auto', 'office', 'python'):
+            return env.strip().lower()
+        try:
+            import yaml
+            for cfg_path in (os.path.join(os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.dirname(
+                        os.path.abspath(__file__))))), 'config', 'config.yaml')):
+                if os.path.exists(cfg_path):
+                    with open(cfg_path, encoding='utf-8') as f:
+                        data = yaml.safe_load(f) or {}
+                    proc = data.get('processing') or {}
+                    eng = proc.get('image_export_engine')
+                    if isinstance(eng, str) and eng.strip().lower() in ('auto', 'office', 'python'):
+                        return eng.strip().lower()
+                    if proc.get('use_com_interface') is True:
+                        return 'office'
+        except Exception as e:
+            logger.debug(f"读取图片导出引擎配置失败（用默认 auto）: {e}")
+        return 'auto'
+
+    def _pick_image_engine(self):
+        """返回 (engine_name, exporter)。auto 策略下 COM 优先、纯 Python 兜底。"""
+        from src.core.processors.pillow_image_exporter import PillowImageExporter
+        strategy = self._image_engine_config()
+        if strategy == 'python':
+            return 'python', PillowImageExporter()
+        if strategy == 'office':
+            from src.core.processors.com_image_exporter import COMImageExporter
+            com = COMImageExporter()
+            if not com.is_available():
+                raise RuntimeError(
+                    "导出引擎配置为 office，但未检测到 Microsoft Office/WPS——"
+                    "请安装 Office 或把 processing.image_export_engine 改为 auto/python")
+            return 'office', com
+        # auto：COM 优先
+        from src.core.processors.com_image_exporter import COMImageExporter
+        com = COMImageExporter()
+        if com.is_available():
+            return 'office', com
+        logger.info("auto 策略：未检测到 Office，降级纯 Python 渲染引擎")
+        return 'python', PillowImageExporter()
+
+    def _export_with_engine(self, exporter, temp_path, output_dir, format, quality):
+        """按所选引擎导出；auto 策略下 COM 失败自动降级纯 Python（保持总能出图）"""
+        try:
+            return exporter.export_to_images(temp_path, output_dir, format, quality)
+        except Exception as e:
+            if self._image_engine_config() == 'office':
+                raise
+            logger.warning(f"COM 导出失败（{e}），降级纯 Python 渲染引擎重试")
+            from src.core.processors.pillow_image_exporter import PillowImageExporter
+            return PillowImageExporter().export_to_images(
+                temp_path, output_dir, format, quality)
 
     def get_slide_count(self) -> int:
         """

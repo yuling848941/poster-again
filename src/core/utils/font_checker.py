@@ -10,6 +10,11 @@ import re
 from typing import Set, List, Dict, Optional
 from pathlib import Path
 
+try:
+    from src.core.processors import font_registry
+except ImportError:
+    from core.processors import font_registry
+
 logger = logging.getLogger(__name__)
 
 
@@ -212,6 +217,10 @@ class FontChecker:
                             is_installed = True
                             break
 
+            # 字体注册表可解析（捆绑思源字体或系统路径表命中）→ 渲染有可用字体，不算缺失
+            if not is_installed and font_registry.is_resolvable(font_name):
+                is_installed = True
+
             detail = {
                 'name': font_name,
                 'installed': is_installed,
@@ -267,6 +276,6 @@ class FontChecker:
         messages.append("建议操作：")
         messages.append("  1. 安装缺失的字体文件后重新运行程序")
         messages.append("  2. 或在 PowerPoint 中将模板字体替换为系统已安装字体")
-        messages.append("  3. 或导出图片时，缺失字体的文本将使用微软雅黑显示")
+        messages.append("  3. 或导出图片时，缺失字体的文本将回退默认字体（系统微软雅黑/捆绑思源黑体）显示")
 
         return "\n".join(messages)

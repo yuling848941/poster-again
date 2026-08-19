@@ -73,6 +73,14 @@ def main():
     logger.info("启动 PPT 批量生成工具")
     logger.info("使用纯 Python PPTX 处理器（PPT 生成无需 Office/WPS）")
 
+    # 字体解析策略注入（image_generation.font_policy，见 font_registry.py）
+    try:
+        from src.core.processors import font_registry
+    except ImportError:
+        from core.processors import font_registry
+    font_registry.set_policy(str(config_manager.get(
+        "image_generation.font_policy", "auto") or "auto"))
+
     app = QApplication(sys.argv)
 
     # 设置应用程序属性
