@@ -19,33 +19,52 @@ LINE_HEIGHT_RATIO=1.25 / BASELINE0_FRAC=0.72，残余偏差 ±4.5 逻辑像素�
 """
 
 import logging
+import io
 import math
 import os
 import re
+import tempfile
 from typing import List
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
 
 try:
-    from src.core.processors.format_inheritance import (
+    from src.render_core.format_inheritance import (
         FormatResolver, load_theme, parse_color_el, parse_fill, resolve_bg_ref,
+        grad_stops,
     )
-    from src.core.processors.shape_geometry import preset_geometry, draw_path
+    from src.render_core.shape_geometry import preset_geometry, draw_path
+    from src.render_core import font_registry
 except ImportError:
-    from core.processors.format_inheritance import (
+    from render_core.format_inheritance import (
         FormatResolver, load_theme, parse_color_el, parse_fill, resolve_bg_ref,
+        grad_stops,
     )
-    from core.processors.shape_geometry import preset_geometry, draw_path
+    from render_core.shape_geometry import preset_geometry, draw_path
+    from render_core import font_registry
 
 logger = logging.getLogger(__name__)
 
 # ---------------- 校准常数（对照 PowerPoint 导出图调整，勿随意改动） ----------------
+# 行距/基线/删除线三常数已按物理字体拆分到 font_registry（metrics_for 按字体文件查询），
+# 此处保留全局兜底值（= 雅黑 COM 实测值）；阴影/斜体等其余仍为全局值
 LINE_HEIGHT_RATIO = 1.25   # 微软雅黑 单倍行距/字号（PowerPoint 按字体 metrics）
 BASELINE0_FRAC = 0.72      # 首行基线在行高盒中的位置
 SHADOW_SIGMA_FRAC = 0.5    # PowerPoint blurRad -> Pillow GaussianBlur sigma 的系数
+# glow 三常数（红/橙/黄/绿/蓝五色 COM 探针统一校准，与色相无关；
+# 强度比全色 ±4%，光晕面积比 ≤+19%——换任意发光颜色无需重调）
+GLOW_SIGMA_KS = (0.08, 0.18, 0.3)   # glow 各层 sigma = rad × k
+GLOW_GAIN = 2.45             # glow alpha 增益（乘发光色 alpha 后封顶 255）
+GLOW_GAMMA = 0.7             # glow alpha 伽马（<1 提亮：光晕边缘更浓）
+
+
+def _glow_lut(alpha_255):
+    """glow 蒙版值 -> 最终 alpha 的 256 项 LUT：先伽马再乘增益封顶"""
+    top = min(255, int(alpha_255 * GLOW_GAIN))
+    return [int((v / 255.0) ** GLOW_GAMMA * top) for v in range(256)]
 ITALIC_SHEAR = 0.2126      # 合成斜体斜切率（tan 12°，无斜体字库时使用）
 STRIKE_POS_EM = 0.245      # 删除线位于基线上方 0.245em（COM 对照微软雅黑实测校准）
 STRIKE_THICK_EM = 0.05     # 删除线/下划线厚度 0.05em
@@ -54,20 +73,51 @@ UNDERLINE_POS_EM = 0.09    # 下划线位于基线下方 0.09em
 
 EMU_PER_PT = 12700
 
-# 字体注册表：模板 typeface -> Windows 字体文件（按需扩充）
-_FONT_FILES = {
-    ('微软雅黑', False): r'C:\Windows\Fonts\msyh.ttc',
-    ('微软雅黑', True): r'C:\Windows\Fonts\msyhbd.ttc',
-    ('Microsoft YaHei', False): r'C:\Windows\Fonts\msyh.ttc',
-    ('Microsoft YaHei', True): r'C:\Windows\Fonts\msyhbd.ttc',
-    ('宋体', False): r'C:\Windows\Fonts\simsun.ttc',
-    ('宋体', True): r'C:\Windows\Fonts\simsun.ttc',
-    ('黑体', False): r'C:\Windows\Fonts\simhei.ttf',
-    ('黑体', True): r'C:\Windows\Fonts\simhei.ttf',
-    ('楷体', False): r'C:\Windows\Fonts\simkai.ttf',
-    ('楷体', True): r'C:\Windows\Fonts\simkai.ttf',
-}
-_DEFAULT_FONT = r'C:\Windows\Fonts\msyh.ttc'
+# 字体解析统一走 font_registry（捆绑思源黑体/宋体 + 系统 Windows 字体表，跨平台）
+# 排版校准常数随物理字体绑定，见 font_registry.METRICS_*
+
+
+def _load_rgba(blob, target_wh, crop_rect=None):
+    """图片字节 -> 目标尺寸 RGBA（移动端 OOM 防护的内存路径优化）：
+    - 大 blob（>8MB）写临时文件解码，避免 io.BytesIO 的整份字节拷贝
+    - JPEG 且无需裁剪：draft 解码期降采样（DCT 缩放，跳过全分辨率解码）
+    - 不透明图先 resize 再补 alpha，避免全分辨率 RGBA 中间副本
+      （LANCZOS 按通道独立重采样，与"先 convert 再 resize"逐像素等价）
+    - crop_rect (l,t,r,b 源图百分比)：srcRect 裁剪在原生模式上做，再 resize
+    """
+    tw = (max(1, int(target_wh[0])), max(1, int(target_wh[1])))
+    tmp_path = None
+    try:
+        if len(blob) > 8 * 1024 * 1024:
+            fd, tmp_path = tempfile.mkstemp(suffix='.imgblob')
+            with os.fdopen(fd, 'wb') as f:
+                f.write(blob)
+            img = Image.open(tmp_path)
+        else:
+            img = Image.open(io.BytesIO(blob))
+        try:
+            has_alpha = (img.mode in ('RGBA', 'LA')
+                         or (img.mode == 'P' and 'transparency' in img.info))
+            if img.format == 'JPEG' and not crop_rect:
+                img.draft('RGB', tw)
+            if crop_rect:
+                w0, h0 = img.size
+                l, t, r, b = crop_rect
+                img = img.crop((int(w0 * l), int(h0 * t),
+                                int(w0 * (1 - r)), int(h0 * (1 - b))))
+            if has_alpha:
+                return img.convert('RGBA').resize(tw, Image.LANCZOS)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            return img.resize(tw, Image.LANCZOS).convert('RGBA')
+        finally:
+            img.close()   # 释放文件句柄/解码缓冲（派生图已复制，不受影响）
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _parse_shadow(rPr):
@@ -83,6 +133,19 @@ def _parse_shadow(rPr):
         'dir_deg': int(shdw.get('dir', '0')) / 60000.0,
         'clr_el': list(shdw)[0],
     }
+
+
+def _parse_glow(rPr):
+    """文字发光 a:glow：返回 None | dict(rad_pt, clr_el)。颜色带 alpha（如 40%）"""
+    if rPr is None:
+        return None
+    glow = rPr.find(qn('a:effectLst') + '/' + qn('a:glow'))
+    if glow is None:
+        return None
+    clr = list(glow)
+    if not clr:
+        return None
+    return {'rad_pt': int(glow.get('rad', '0')) / EMU_PER_PT, 'clr_el': clr[0]}
 
 
 def _parse_stroke(rPr, theme_colors):
@@ -107,59 +170,59 @@ def _tokenize(text):
 
 class _Style:
     __slots__ = ('size_pt', 'bold', 'italic', 'spc_pt', 'fill', 'shadow',
-                 'stroke', 'strike', 'underline', 'font_path')
+                 'glow', 'stroke', 'strike', 'underline', 'font_path')
 
-    def __init__(self, size_pt, bold, italic, spc_pt, fill, shadow, stroke,
-                 strike, underline, font_path):
+    def __init__(self, size_pt, bold, italic, spc_pt, fill, shadow, glow,
+                 stroke, strike, underline, font_path):
         self.size_pt, self.bold, self.italic = size_pt, bold, italic
         self.spc_pt, self.fill, self.shadow = spc_pt, fill, shadow
-        self.stroke, self.strike, self.underline = stroke, strike, underline
+        self.glow, self.stroke = glow, stroke
+        self.strike, self.underline = strike, underline
         self.font_path = font_path
 
     def key(self):
         return (self.size_pt, self.bold, self.italic, self.spc_pt,
-                repr(self.fill), repr(self.shadow), repr(self.stroke),
-                self.strike, self.underline)
+                repr(self.fill), repr(self.shadow), repr(self.glow),
+                repr(self.stroke), self.strike, self.underline)
 
 
 def _font_path_for(typeface, bold):
-    """字体名 -> 字体文件；带存在性检查，不可用逐级回退微软雅黑并告警"""
-    candidates = []
-    if typeface:
-        candidates += [(typeface, bold), (typeface, False),
-                       (typeface.replace('-Bold', ''), bold)]
-    candidates += [('微软雅黑', bold), ('微软雅黑', False)]
-    for key in candidates:
-        path = _FONT_FILES.get(key)
-        if path and os.path.exists(path):
-            return path
-    if typeface:
-        logger.warning(f"字体不可用（未注册或文件缺失），回退默认字体: {typeface!r}")
-    return _DEFAULT_FONT
+    """字体名 -> 字体文件；走字体注册表（策略见 font_registry），无命中回退默认并告警"""
+    return font_registry.resolve(typeface, bold).path
 
 
 def _style_from_props(run, props, theme_colors):
     """把继承解析出的有效属性转换为渲染样式（阴影/描边只取显式 rPr）"""
     rPr = run._r.find(qn('a:rPr'))
     shadow = _parse_shadow(rPr)
+    glow = _parse_glow(rPr)
     stroke = _parse_stroke(rPr, theme_colors)
     return _Style(props['sz_pt'], props['bold'], props['italic'], props['spc_pt'],
-                  props['fill'], shadow, stroke,
+                  props['fill'], shadow, glow, stroke,
                   props.get('strike', False), props.get('underline'),
                   _font_path_for(props['typeface'], props['bold']))
 
 
-def _make_linear_gradient(w, h, stops, ang_deg):
-    """按 stops [(pos, rgb, alpha)] 生成 w×h RGBA 线性渐变图。ang 0°=左→右，90°=上→下（numpy 加速）"""
-    import numpy as np
+def _make_linear_gradient(w, h, stops, ang_deg, ref_w=None, ref_h=None,
+                          off_x=0.0, off_y=0.0):
+    """按 stops [(pos, rgb, alpha)] 生成 w×h RGBA 线性渐变图。ang 0°=左→右，90°=上→下。
+    有 numpy 走向量化（快）；无 numpy（如安卓 Chaquopy 环境）自动退化纯 Pillow 路径。
+    ref_w/ref_h：t 归一化基准尺寸（默认 = w,h）；off_x/off_y：投影坐标偏移。
+    文字渐变按文本框 box 归一化（PowerPoint 语义），生成范围可大于框以覆盖溢出
+    文字——框外 t 钳制到端点色，与 PowerPoint 溢出行为一致（不是黑色）。"""
     theta = math.radians(ang_deg)
     vx, vy = math.cos(theta), math.sin(theta)
-    corners = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]
+    rw, rh = (ref_w or w), (ref_h or h)
+    corners = [(0, 0), (rw - 1, 0), (0, rh - 1), (rw - 1, rh - 1)]
     projs = [x * vx + y * vy for x, y in corners]
     p0, p1 = min(projs), max(projs)
     span = (p1 - p0) or 1.0
+    try:
+        import numpy as np
+    except ImportError:
+        return _gradient_pure(w, h, stops, vx, vy, p0, span, off_x, off_y)
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    t = np.clip(((xx * vx + yy * vy) - p0) / span, 0.0, 1.0)
+    t = np.clip((((xx + off_x) * vx + (yy + off_y) * vy) - p0) / span, 0.0, 1.0)
     pos = np.array([s[0] for s in stops], dtype=np.float32)
     channels = [
         np.interp(t, pos, np.array([s[1][c] for s in stops], dtype=np.float32))
@@ -169,6 +232,44 @@ def _make_linear_gradient(w, h, stops, ang_deg):
         t, pos, np.array([s[2] * 255 for s in stops], dtype=np.float32)))
     arr = np.dstack(channels).round().astype(np.uint8)
     return Image.fromarray(arr, 'RGBA')
+
+
+def _gradient_pure(w, h, stops, vx, vy, p0, span, off_x=0.0, off_y=0.0):
+    """无 numpy 的渐变路径（安卓零依赖）：按行线性投影量化 t，再用 bytes.translate
+    做 C 级逐通道 LUT 映射（与 numpy 路径同数学，t 多一层 8bit 量化，差异 ≤2/255）。
+    注意：整幅画布级大渐变（如 3584 宽）每张约 1~2s；海报场景渐变多为文字级小区域。"""
+    def build_lut(vals):
+        out = bytearray(256)
+        pos = [s[0] for s in stops]
+        n = len(pos)
+        for i in range(256):
+            t = min(1.0, max(0.0, i / 255.0))
+            j = 0
+            while j < n - 2 and t > pos[j + 1]:
+                j += 1
+            t0, t1 = pos[j], pos[j + 1]
+            f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+            out[i] = int(round(vals[j] + (vals[j + 1] - vals[j]) * f)) & 0xFF
+        return bytes(out)
+
+    lut_r = build_lut([s[1][0] for s in stops])
+    lut_g = build_lut([s[1][1] for s in stops])
+    lut_b = build_lut([s[1][2] for s in stops])
+    lut_a = build_lut([int(round(s[2] * 255)) for s in stops])
+
+    base0 = (off_x * vx + off_y * vy - p0) / span
+    dx, dy = vx / span, vy / span
+    rows = [[] for _ in range(4)]
+    for y in range(h):
+        base = (base0 + dy * y) * 255.0
+        dxx = dx * 255.0
+        tq = bytes(min(255, max(0, int(base + dxx * x + 0.5))) for x in range(w))
+        rows[0].append(tq.translate(lut_r))
+        rows[1].append(tq.translate(lut_g))
+        rows[2].append(tq.translate(lut_b))
+        rows[3].append(tq.translate(lut_a))
+    chans = [Image.frombytes('L', (w, h), b''.join(r)) for r in rows]
+    return Image.merge('RGBA', chans)
 
 
 class _Xform:
@@ -222,18 +323,18 @@ class PillowImageExporter:
     def precheck(self, pptx_path: str):
         """渲染预检（白名单制），返回问题清单；字体检查自动接入 FontChecker"""
         try:
-            from src.core.processors.render_precheck import RenderPrecheck
+            from src.render_core.render_precheck import RenderPrecheck
         except ImportError:
-            from core.processors.render_precheck import RenderPrecheck
-        installed = None
+            from render_core.render_precheck import RenderPrecheck
+        installed = font_registry.available_typefaces()
         try:
             try:
                 from src.core.utils.font_checker import FontChecker
             except ImportError:
                 from core.utils.font_checker import FontChecker
-            installed = FontChecker().get_installed_fonts()
+            installed |= FontChecker().get_installed_fonts()
         except Exception as e:
-            logger.debug(f"字体检查跳过: {e}")
+            logger.debug(f"系统字体检查跳过（仅用注册表字体集）: {e}")
         return RenderPrecheck(installed_fonts=installed).check_pptx(pptx_path)
 
     def export_to_images(self, pptx_path: str, output_dir: str,
@@ -253,6 +354,7 @@ class PillowImageExporter:
         if not os.path.exists(pptx_path):
             raise FileNotFoundError(f"文件不存在：{pptx_path}")
         os.makedirs(output_dir, exist_ok=True)
+        font_registry.load_embedded_fonts(pptx_path)
 
         # 渲染预检（白名单制）：本分支无 COM 兜底，问题仅告警后尽力渲染
         issues = self.precheck(pptx_path)
@@ -262,7 +364,20 @@ class PillowImageExporter:
             logger.warning(f"[预检] 共 {len(issues)} 项不支持/风险提示，输出可能与 PowerPoint 存在差异")
 
         prs = Presentation(pptx_path)
-        theme = load_theme(pptx_path)
+        return self.export_presentation(prs, output_dir, image_format, quality,
+                                        theme=load_theme(pptx_path))
+
+    def export_presentation(self, prs, output_dir: str, image_format: str = "PNG",
+                            quality: float = 1.0, theme=None) -> List[str]:
+        """
+        从已打开的 Presentation 渲染（批量个性化通道：模板/主题只加载一次，
+        配合 personalize.Personalizer 的"替换->渲染->恢复"逐行复用）。
+
+        Args:
+            prs: 已打开的 python-pptx Presentation
+            theme: 预加载的主题（None 时无法回源加载，仅当模板无主题依赖时可用）
+        """
+        os.makedirs(output_dir, exist_ok=True)
         ext = 'jpg' if image_format.upper() in ('JPG', 'JPEG') else image_format.lower()
         self._dpi = 96.0 * quality
 
@@ -511,17 +626,14 @@ class PillowImageExporter:
                 try:
                     _, rId, src = fill
                     part = shape.part.related_part(rId)
-                    img = Image.open(io.BytesIO(part.blob)).convert('RGBA')
-                    if src is not None:
-                        w0, h0 = img.size
-                        rect = {k: int(src.get(k, '0')) / 100000.0
-                                for k in ('l', 't', 'r', 'b')}
-                        img = img.crop((
-                            int(w0 * rect.get('l', 0)), int(h0 * rect.get('t', 0)),
-                            int(w0 * (1 - rect.get('r', 0))),
-                            int(h0 * (1 - rect.get('b', 0)))))
-                    img = img.resize((max(1, int(round(w))), max(1, int(round(h)))),
-                                     Image.LANCZOS)
+                    rect = ({k: int(src.get(k, '0')) / 100000.0
+                             for k in ('l', 't', 'r', 'b')}
+                            if src is not None else None)
+                    img = _load_rgba(
+                        part.blob, (int(round(w)), int(round(h))),
+                        crop_rect=(rect.get('l', 0), rect.get('t', 0),
+                                   rect.get('r', 0), rect.get('b', 0))
+                        if rect else None)
                     tile = Image.new('RGBA', (W, H), (0, 0, 0, 0))
                     tile.paste(img, (int(round(x)), int(round(y))))
                     tile.putalpha(mask)
@@ -578,11 +690,8 @@ class PillowImageExporter:
             if grad is not None:
                 lin = grad.find(qn('a:lin'))
                 if lin is not None:
-                    stops = []
-                    for gs in grad.findall(qn('a:gsLst') + '/' + qn('a:gs')):
-                        pos = int(gs.get('pos')) / 100000.0
-                        rgb, a = parse_color_el(list(gs)[0], theme_colors)
-                        stops.append((pos, rgb, a))
+                    stops = grad_stops(
+                        grad, lambda clr: parse_color_el(clr, theme_colors))
                     canvas.alpha_composite(
                         _make_linear_gradient(W, H, stops, int(lin.get('ang')) / 60000.0))
                     return True
@@ -593,9 +702,7 @@ class PillowImageExporter:
                 if blip is not None:
                     rId = blip.get(qn('r:embed'))
                     part = container.part.related_part(rId)
-                    import io
-                    img = Image.open(io.BytesIO(part.blob)).convert('RGBA')
-                    canvas.alpha_composite(img.resize((W, H), Image.LANCZOS))
+                    canvas.alpha_composite(_load_rgba(part.blob, (W, H)))
                     return True
             return False
         except Exception as e:
@@ -605,22 +712,17 @@ class PillowImageExporter:
     def _draw_picture(self, canvas, shape, scale, xform=None):
         import io
         xform = xform or _IDENTITY
-        img = Image.open(io.BytesIO(shape.image.blob)).convert('RGBA')
+        w = max(1, int(round(shape.width * scale * xform.sx)))
+        h = max(1, int(round(shape.height * scale * xform.sy)))
         # srcRect 裁剪：l/t/r/b 为源图百分比（1/100000 单位）
+        crop = None
         blipFill = shape._element.find(qn('p:blipFill'))
         if blipFill is not None:
             src = blipFill.find(qn('a:srcRect'))
             if src is not None:
-                w0, h0 = img.size
-                l = int(src.get('l', '0')) / 100000.0
-                t = int(src.get('t', '0')) / 100000.0
-                r = int(src.get('r', '0')) / 100000.0
-                b = int(src.get('b', '0')) / 100000.0
-                img = img.crop((int(w0 * l), int(h0 * t),
-                                int(w0 * (1 - r)), int(h0 * (1 - b))))
-        w = max(1, int(round(shape.width * scale * xform.sx)))
-        h = max(1, int(round(shape.height * scale * xform.sy)))
-        img = img.resize((w, h), Image.LANCZOS)
+                crop = tuple(int(src.get(k, '0')) / 100000.0
+                             for k in ('l', 't', 'r', 'b'))
+        img = _load_rgba(shape.image.blob, (w, h), crop_rect=crop)
         canvas.alpha_composite(img, (int(round(xform.mx(shape.left * scale))),
                                      int(round(xform.my(shape.top * scale)))))
 
@@ -661,11 +763,14 @@ class PillowImageExporter:
                     toks.append((tk, st))
             paras_data.append((algn, pp['lnSpc_pct'], toks))
 
-        paragraphs = []  # (algn, line_h_px, lines[[ (token, style, adv) ]])
+        # 行排版数据（typographic 模型，经 COM 对照实测）：
+        # 行距推进 = descent(上一行) + ascent(下一行)，ascent=(a+g×lnSpc)×字号px。
+        # 同字号时 = 行高（与历史校准自洽）；字号骤增的相邻行 PowerPoint 按此
+        # 保证大字不压上一行（旧"按上行行高推进"模型会导致大字上叠，如承保贺报）。
+        all_lines = []  # [(algn, line[(tk,style,adv)], ascent_px, descent_px)]
         for algn, lnSpc, toks in paras_data:
-            max_sz = max((st.size_pt for _, st in toks), default=frame_max_sz)
-            line_h = (pt2px(max_sz) * LINE_HEIGHT_RATIO * lnSpc
-                      * (1.0 - bp.get('lnspc_reduction', 0.0)))
+            para_dom = max(toks, key=lambda t: t[1].size_pt)[1] if toks else None
+            para_max_sz = para_dom.size_pt if para_dom is not None else frame_max_sz
 
             lines, cur, cur_w = [], [], 0.0
             for tk, st in toks:
@@ -680,14 +785,36 @@ class PillowImageExporter:
                 cur_w += adv
             if cur:
                 lines.append(cur)
-            paragraphs.append((algn, line_h, lines))  # 空段落 lines=[] 保留占位
 
-        if not paragraphs:
+            def line_metrics(dom, sz):
+                """按行主导字体返回 (ascent_px, descent_px)"""
+                em_px = pt2px(sz)
+                m = font_registry.metrics_for(dom.font_path) if dom is not None else None
+                if m is not None:
+                    asc = (m.baseline_a + m.baseline_g * lnSpc) * em_px
+                    lh = (em_px * m.line_height_ratio * lnSpc
+                          * (1.0 - bp.get('lnspc_reduction', 0.0)))
+                else:
+                    asc = BASELINE0_FRAC * LINE_HEIGHT_RATIO * lnSpc * em_px
+                    lh = (em_px * LINE_HEIGHT_RATIO * lnSpc
+                          * (1.0 - bp.get('lnspc_reduction', 0.0)))
+                return asc, lh - asc
+
+            if lines:
+                for line in lines:
+                    dom = max(line, key=lambda t: t[1].size_pt)[1]
+                    asc, desc = line_metrics(dom, dom.size_pt)
+                    all_lines.append((algn, line, asc, desc))
+            else:
+                # 空段落占一个整行盒（ascent=0 / descent=完整行高，块高不变）
+                _asc, _desc = line_metrics(para_dom, para_max_sz)
+                all_lines.append((algn, [], 0.0, _asc + _desc))
+
+        if not all_lines:
             return
 
-        # 2) anchor 垂直定位（两遍布局：文本块总高 = Σ 行高，空段落按 1 行计）
-        total_h = sum(max(1, len(lines)) * line_h
-                      for _, line_h, lines in paragraphs)
+        # 2) anchor 垂直定位（文本块总高 = Σ(ascent+descent)，同字号时 ≡ Σ行高）
+        total_h = sum(asc + desc for _a, _l, asc, desc in all_lines)
         content_h = box_h_px - ins['tIns'] - ins['bIns']
         if bp['anchor'] == 'ctr':
             y_off = max(0.0, (content_h - total_h) / 2.0)
@@ -698,30 +825,32 @@ class PillowImageExporter:
 
         layers = {}   # style.key() -> [(char, style, x_px, baseline_px)]
         y_baseline = box_t + ins['tIns'] + y_off
-        first_para = True
-        for algn, line_h, lines in paragraphs:
-            if first_para:
-                y_baseline += BASELINE0_FRAC * line_h
-                first_para = False
-            # 行距推进只发生在每行画完之后（段界不额外加行高，与 PowerPoint 一致）
-            for line in lines:
-                lw = sum(adv for _, _, adv in line)
-                lw -= pt2px(line[-1][1].spc_pt)  # 行尾字距不计入居中宽度
-                if algn == 'ctr':
-                    x = box_l + ins['lIns'] + (avail - lw) / 2.0
-                elif algn == 'r':
-                    x = box_l + ins['lIns'] + (avail - lw)
-                else:
-                    x = box_l + ins['lIns']
-                for tk, st, _ in line:
-                    f = self._font(st)
-                    for ch in tk:
-                        if not ch.isspace():
-                            layers.setdefault(st.key(), []).append((ch, st, x, y_baseline))
-                        x += f.getlength(ch) + pt2px(st.spc_pt)
-                y_baseline += line_h
-            if not lines:
-                y_baseline += line_h  # 空段落：无行可画，占一行高
+        prev_desc = 0.0
+        first = True
+        for algn, line, asc, desc in all_lines:
+            if first:
+                y_baseline += asc
+                first = False
+            else:
+                # 行距推进：上一行下延 + 本行上伸（PowerPoint typographic 模型）
+                y_baseline += prev_desc + asc
+            prev_desc = desc
+            if not line:
+                continue  # 空段落占位行：无字形可画
+            lw = sum(adv for _, _, adv in line)
+            lw -= pt2px(line[-1][1].spc_pt)  # 行尾字距不计入居中宽度
+            if algn == 'ctr':
+                x = box_l + ins['lIns'] + (avail - lw) / 2.0
+            elif algn == 'r':
+                x = box_l + ins['lIns'] + (avail - lw)
+            else:
+                x = box_l + ins['lIns']
+            for tk, st, _ in line:
+                f = self._font(st)
+                for ch in tk:
+                    if not ch.isspace():
+                        layers.setdefault(st.key(), []).append((ch, st, x, y_baseline))
+                    x += f.getlength(ch) + pt2px(st.spc_pt)
 
         # 3) 按样式分组绘制（阴影 -> 填充）
         if not layers:
@@ -757,6 +886,21 @@ class PillowImageExporter:
                     sh_img,
                     (int(round(dist * math.cos(th))), int(round(dist * math.sin(th))))
                 )
+            if st.glow:
+                g = st.glow
+                rgb, alpha = parse_color_el(g['clr_el'], theme_colors)
+                rad_px = pt2px(g['rad_pt'])
+                # 发光 = 文字蒙版高斯外扩：多层递增 σ（贴边亮环 -> 外围扩散），
+                # lighter 合成后乘发光色 alpha；与文字层做 screen（加色）混合——
+                # PowerPoint 的 glow 是光晕，会照亮背景而非压暗（普通 alpha 混合偏暗）。
+                # σ 组与增益经红/橙/黄/绿/蓝五色 COM 探针统一校准，与色相无关
+                glow_a = Image.new('L', (W, H), 0)
+                for k in GLOW_SIGMA_KS:
+                    glow_a = ImageChops.lighter(
+                        glow_a, mask.filter(ImageFilter.GaussianBlur(rad_px * k)))
+                g_img = Image.new('RGBA', (W, H), (*rgb, 0))
+                g_img.putalpha(glow_a.point(_glow_lut(alpha * 255)))
+                text_layer = ImageChops.screen(text_layer, g_img)
             if st.stroke:
                 w_pt, rgb, alpha = st.stroke
                 stroke_mask = Image.new('L', (W, H), 0)
@@ -770,26 +914,56 @@ class PillowImageExporter:
                 stroke_img.putalpha(
                     stroke_mask.point(lambda v, a=int(alpha * 255): v * a // 255))
                 text_layer.alpha_composite(stroke_img)
-            gx0, gy0, gx1, gy1 = bbox
+            # 文字渐变/图片填充在【文本框 box】上投影（PowerPoint 语义）。
+            # 生成范围取框与文字实际范围的并集：溢出文字的渐变按端点色延伸
+            # （PowerPoint 行为），而不是落进框外透明黑变成黑字
+            box_w_px = shape.width * scale * xform.sx
+            mb = mask.getbbox() or (0, 0, 1, 1)
+            gx0 = int(min(box_l, mb[0])) - 1
+            gy0 = int(min(box_t, mb[1])) - 1
+            gx1 = int(max(box_l + box_w_px, mb[2])) + 1
+            gy1 = int(max(box_t + box_h_px, mb[3])) + 1
+            gw, gh = max(1, gx1 - gx0), max(1, gy1 - gy0)
             if st.fill and st.fill[0] == 'grad':
                 _, stops, ang = st.fill
-                grad = _make_linear_gradient(gx1 - gx0, gy1 - gy0, stops, ang)
+                grad = _make_linear_gradient(
+                    gw, gh, stops, ang,
+                    ref_w=box_w_px, ref_h=box_h_px,
+                    off_x=gx0 - int(box_l), off_y=gy0 - int(box_t))
                 tile = Image.new('RGBA', (W, H), (0, 0, 0, 0))
                 tile.paste(grad, (gx0, gy0))
                 tile.putalpha(mask)
                 text_layer.alpha_composite(tile)
             elif st.fill and st.fill[0] == 'blip':
-                # 图片文字填充：图片拉伸铺满文字包围盒，经文字蒙版合成
+                # 图片文字填充：图片拉伸铺满文本框 box；溢出区按图片边缘延伸
+                # （PowerPoint 为 tileRect 平铺语义，海报场景边缘延伸已足够近似）
                 _, blob, rect = st.fill
-                img = Image.open(io.BytesIO(blob)).convert('RGBA')
-                if rect:
-                    w0, h0 = img.size
-                    img = img.crop((
-                        int(w0 * rect.get('l', 0)), int(h0 * rect.get('t', 0)),
-                        int(w0 * (1 - rect.get('r', 0))), int(h0 * (1 - rect.get('b', 0)))))
-                img = img.resize((max(1, gx1 - gx0), max(1, gy1 - gy0)), Image.LANCZOS)
+                img = _load_rgba(
+                    blob, (box_w_px, box_h_px),
+                    crop_rect=(rect.get('l', 0), rect.get('t', 0),
+                               rect.get('r', 0), rect.get('b', 0))
+                    if rect else None)
+                pl = max(0, int(box_l) - gx0)
+                pt_ = max(0, int(box_t) - gy0)
+                pr = max(0, gx1 - int(box_l + box_w_px))
+                pb = max(0, gy1 - int(box_t + box_h_px))
+                bw, bh = max(1, int(box_w_px)), max(1, int(box_h_px))
+                cover = Image.new('RGBA', (gw, gh), (0, 0, 0, 0))
+                if pl or pt_ or pr or pb:   # 边缘延伸到溢出区
+                    top = img.crop((0, 0, bw, 1)).resize((bw, pt_)) if pt_ else None
+                    bot = img.crop((0, bh - 1, bw, bh)).resize((bw, pb)) if pb else None
+                    ih = bh + (pt_ or 0) + (pb or 0)
+                    left = img.crop((0, 0, 1, bh)).resize((pl, ih)) if pl else None
+                    right = img.crop((bw - 1, 0, bw, bh)).resize((pr, ih)) if pr else None
+                    cover.paste(top, (pl, 0))
+                    cover.paste(bot, (pl, (pt_ or 0) + bh))
+                    cover.paste(img, (pl, pt_ or 0))
+                    cover.paste(left, (0, 0))
+                    cover.paste(right, (pl + bw, 0))
+                else:
+                    cover.paste(img, (0, 0))
                 tile = Image.new('RGBA', (W, H), (0, 0, 0, 0))
-                tile.paste(img, (gx0, gy0))
+                tile.paste(cover, (gx0, gy0))
                 tile.putalpha(mask)
                 text_layer.alpha_composite(tile)
             else:
@@ -831,7 +1005,8 @@ class PillowImageExporter:
             info[1] = max(info[1], x + f.getlength(ch))
         for yb, (x0, x1) in lines.items():
             if glyphs[0][1].strike:
-                y = yb - STRIKE_POS_EM * em
+                y = yb - font_registry.metrics_for(
+                    glyphs[0][1].font_path).strike_pos_em * em
                 md.rectangle((x0, y, x1, y + thick), fill=255)
             u = glyphs[0][1].underline
             if u:

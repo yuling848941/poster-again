@@ -28,7 +28,7 @@
   ALIGN_JUST        两端对齐
   INHERIT_UNRESOLVED 继承链存在无法解析的构造
   GRAD_PATH         路径渐变（仅支持线性 lin）
-  TEXT_EFFECTS      文字 glow/倒影/3D（outerShdw/描边已支持，不算）
+  TEXT_EFFECTS      文字倒影/3D（glow/outerShdw/描边已支持，不算）
   TEXT_STROKE       文字非纯色描边（渐变等，按无描边渲染）
   TEXT_DECOR        下划线样式为波浪/加粗等（按单实线渲染）
   FONT_MISSING      字体未安装
@@ -40,7 +40,8 @@
 normAutofit 缩字（AUTOFIT_SCALE）、文字纯色描边（TEXT_STROKE）、
 图片裁剪 srcRect（PIC_CROP）、bgPr/bgRef 背景、图片文字填充 blipFill、
 18 种预设形状几何 + 纯色/线性渐变/图片形状填充 + outerShdw 形状阴影 + 纯色实线描边、
-合成斜体（无斜体字库时 12° 斜切）、删除线、单/双下划线、纯色文字描边。
+合成斜体（无斜体字库时 12° 斜切）、删除线、单/双下划线、纯色文字描边、
+文字 glow 发光（TEXT_EFFECTS 部分退役）。
 """
 
 import logging
@@ -52,15 +53,15 @@ from pptx import Presentation
 from pptx.oxml.ns import qn
 
 try:
-    from src.core.processors.format_inheritance import (
+    from src.render_core.format_inheritance import (
         FormatResolver, load_theme, resolve_bg_ref,
     )
-    from src.core.processors.shape_geometry import SUPPORTED_PRST
+    from src.render_core.shape_geometry import SUPPORTED_PRST
 except ImportError:
-    from core.processors.format_inheritance import (
+    from render_core.format_inheritance import (
         FormatResolver, load_theme, resolve_bg_ref,
     )
-    from core.processors.shape_geometry import SUPPORTED_PRST
+    from render_core.shape_geometry import SUPPORTED_PRST
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +309,7 @@ class RenderPrecheck:
         grad = rPr.find(qn('a:gradFill'))
         if grad is not None and grad.find(qn('a:lin')) is None:
             issues.append(PrecheckIssue(idx, name, 'GRAD_PATH', '路径渐变仅支持线性(lin)'))
-        for eff in ('a:glow', 'a:reflection', 'a:scene3d', 'a:relOff', 'a:softEdge'):
+        for eff in ('a:reflection', 'a:scene3d', 'a:relOff', 'a:softEdge'):
             if rPr.find(qn('a:effectLst') + '/' + qn(eff)) is not None:
                 issues.append(PrecheckIssue(idx, name, 'TEXT_EFFECTS', f'文字效果({eff[2:]})不支持'))
                 break

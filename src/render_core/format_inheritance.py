@@ -119,11 +119,7 @@ def resolve_bg_ref(bgRef, theme: 'ThemeData'):
             rgb, a = color_of(list(el)[0])
             return ('solid', rgb, a)
         if tag == 'gradFill':
-            stops = []
-            for gs in el.findall(qn('a:gsLst') + '/' + qn('a:gs')):
-                pos = int(gs.get('pos')) / 100000.0
-                rgb, a = color_of(list(gs)[0])
-                stops.append((pos, rgb, a))
+            stops = grad_stops(el, color_of)
             lin = el.find(qn('a:lin'))
             ang = int(lin.get('ang')) / 60000.0 if lin is not None else 0.0
             return ('grad', stops, ang)
@@ -138,8 +134,37 @@ def hex2rgb(h):
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
+_PRESET_CLR = {
+    'white': 'FFFFFF', 'black': '000000', 'red': 'FF0000', 'green': '008000',
+    'blue': '0000FF', 'yellow': 'FFFF00', 'cyan': '00FFFF', 'magenta': 'FF00FF',
+    'gray': '808080', 'grey': '808080', 'orange': 'FFA500', 'purple': '800080',
+    'pink': 'FFC0CB', 'brown': 'A52A2A', 'navy': '000080', 'teal': '008080',
+    'olive': '808000', 'lime': '00FF00', 'maroon': '800000', 'silver': 'C0C0C0',
+    'gold': 'FFD700', 'darkGray': 'A9A9A9', 'lightGray': 'D3D3D3',
+    'darkRed': '8B0000', 'darkBlue': '00008B', 'darkGreen': '006400',
+    'lightYellow': 'FFFFE0', 'lightBlue': 'ADD8E6', 'lightGreen': '90EE90',
+}
+
+
+def _apply_lum(rgb, lum_mod=None, lum_off=None, sat_mod=None):
+    """OOXML lumMod/lumOff/satMod：HSL 亮度通道乘/加、饱和度通道乘（值域 0~1）"""
+    import colorsys
+    if lum_mod is None and lum_off is None and sat_mod is None:
+        return rgb
+    h, l, s = colorsys.rgb_to_hls(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
+    if lum_mod is not None:
+        l *= lum_mod
+    if lum_off is not None:
+        l += lum_off
+    if sat_mod is not None:
+        s = min(s * sat_mod, 1.0)
+    l = min(max(l, 0.0), 1.0)
+    r, g, b = colorsys.hls_to_rgb(h, l, s)
+    return (int(round(r * 255)), int(round(g * 255)), int(round(b * 255)))
+
+
 def parse_color_el(clr_el, theme_colors) -> tuple:
-    """解析颜色元素 -> (rgb_tuple, alpha 0~1)"""
+    """解析颜色元素 -> (rgb_tuple, alpha 0~1)；支持 lumMod/lumOff/prstClr"""
     from lxml import etree
     tag = etree.QName(clr_el).localname
     if tag == 'srgbClr':
@@ -149,13 +174,34 @@ def parse_color_el(clr_el, theme_colors) -> tuple:
         rgb = hex2rgb(theme_colors.get(name, '#000000'))
     elif tag == 'sysClr':
         rgb = hex2rgb(clr_el.get('lastClr') or '000000')
+    elif tag == 'prstClr':
+        rgb = hex2rgb(_PRESET_CLR.get(clr_el.get('val'), '000000'))
     else:
         rgb = (0, 0, 0)
+    lm = clr_el.find(qn('a:lumMod'))
+    lo = clr_el.find(qn('a:lumOff'))
+    sm = clr_el.find(qn('a:satMod'))
+    if lm is not None or lo is not None or sm is not None:
+        rgb = _apply_lum(rgb,
+                         int(lm.get('val')) / 100000.0 if lm is not None else None,
+                         int(lo.get('val')) / 100000.0 if lo is not None else None,
+                         int(sm.get('val')) / 100000.0 if sm is not None else None)
     alpha = 1.0
     a = clr_el.find(qn('a:alpha'))
     if a is not None:
         alpha = int(a.get('val')) / 100000.0
     return rgb, alpha
+
+
+def grad_stops(grad_el, color_fn):
+    """渐变 stop 列表 [(pos, rgb, alpha)] 升序；同 pos 后者覆盖（PowerPoint 语义，
+    否则 np.interp 对非单调 pos 行为未定义）"""
+    by_pos = {}
+    for gs in grad_el.findall(qn('a:gsLst') + '/' + qn('a:gs')):
+        pos = int(gs.get('pos')) / 100000.0
+        rgb, a = color_fn(list(gs)[0])
+        by_pos[pos] = (pos, rgb, a)
+    return sorted(by_pos.values())
 
 
 def parse_fill(rPr, theme_colors):
@@ -166,11 +212,7 @@ def parse_fill(rPr, theme_colors):
         return None
     grad = rPr.find(qn('a:gradFill'))
     if grad is not None:
-        stops = []
-        for gs in grad.findall(qn('a:gsLst') + '/' + qn('a:gs')):
-            pos = int(gs.get('pos')) / 100000.0
-            rgb, a = parse_color_el(list(gs)[0], theme_colors)
-            stops.append((pos, rgb, a))
+        stops = grad_stops(grad, lambda clr: parse_color_el(clr, theme_colors))
         lin = grad.find(qn('a:lin'))
         ang = int(lin.get('ang')) / 60000.0 if lin is not None else 0.0
         return ('grad', stops, ang)
