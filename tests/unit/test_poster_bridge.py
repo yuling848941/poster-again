@@ -102,6 +102,25 @@ def main():
     data2 = pb._row_data(s2, s2['rows'][0])
     check('险种恢复自动（未匹配→不替换）', 'ph_险种' not in data2)
 
+    print("(5) start_session 返回渲染预检 issues")
+    r5 = json.loads(pb.start_session(open(tpl, 'rb').read(), csv, 'd.csv'))
+    check('issues 字段存在', 'issues' in r5)
+    check('issues 条目结构完整',
+          all(set(i) >= {'slide', 'shape', 'code', 'message'} for i in r5['issues']))
+    check('issues 不影响会话建立', r5['session'] and r5['row_count'] == 1)
+
+    # 缺失字体探针：安卓端无该字体 → FONT_MISSING（提示将回退捆绑思源字体）
+    prs2 = Presentation()
+    sl = prs2.slides.add_slide(prs2.slide_layouts[6])
+    tb = sl.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    tb.text_frame.text = '探针'
+    tb.text_frame.word_wrap = True
+    tb.text_frame.paragraphs[0].runs[0].font.name = 'NoSuchFont-XYZ'
+    tpl2 = os.path.join(os.path.dirname(tpl), 'font.pptx')
+    prs2.save(tpl2)
+    r5b = json.loads(pb.start_session(open(tpl2, 'rb').read(), None))
+    check('缺失字体触发 FONT_MISSING', any(i['code'] == 'FONT_MISSING' for i in r5b['issues']))
+
     pb.end_session(r['session'])
     print(f"\n结果: {PASS} 通过, {FAIL} 失败")
     return 1 if FAIL else 0

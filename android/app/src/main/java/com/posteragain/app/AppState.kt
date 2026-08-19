@@ -16,6 +16,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlin.coroutines.coroutineContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -33,6 +34,24 @@ data class SessionInfo(
     val rowCount: Int,
     val matched: List<String>,
     val unmatched: List<String>,
+    /** 模板渲染预检问题（近似渲染/字体回退提示，空列表=完全支持） */
+    val issues: List<PrecheckIssueInfo> = emptyList(),
+)
+
+/** 渲染预检问题（render_core RenderPrecheck 的 Kotlin 侧镜像） */
+data class PrecheckIssueInfo(
+    val slide: Int,
+    val shape: String,
+    val code: String,
+    val message: String,
+)
+
+/** 单行渲染失败记录（批量容错：跳过并汇报，可单独重试） */
+data class RowFailure(
+    val index: Int,
+    /** 用户可见行号（数据文件含表头，index 0 = 第 2 行） */
+    val rowNumber: Int,
+    val error: String,
 )
 
 /** 字段取值配置（手动绑定/固定值/前后缀；source: auto|column|fixed） */
@@ -102,6 +121,8 @@ class AppState(private val context: Context) {
     var phase by mutableStateOf(Phase.Idle); private set
     var progress by mutableStateOf(0 to 0)
     var results by mutableStateOf<List<String>>(emptyList()); private set
+    /** 渲染失败的数据行（单行失败跳过不中断批次，可重试） */
+    var failedRows by mutableStateOf<List<RowFailure>>(emptyList()); private set
     var avgMs by mutableStateOf(0.0)
     var previewIndex by mutableStateOf(0)
     private var batchJob: Job? = null
@@ -122,7 +143,30 @@ class AppState(private val context: Context) {
     init {
         loadSettings()
         loadRecents()
+        seedBuiltinTemplates()
         applyFontPolicy()
+    }
+
+    /**
+     * 首次启动把内置模板导入模板库并进入"最近使用"。
+     * 业务模板今后只需放入 assets/builtin_templates/ 即可出厂预置
+     * （升级后如需重新预置，改 bootstrap prefs 的 seed_version 即可）。
+     */
+    private fun seedBuiltinTemplates() {
+        val prefs = context.getSharedPreferences("bootstrap", Context.MODE_PRIVATE)
+        if (prefs.getInt("builtin_seed_version", 0) >= BUILTIN_SEED_VERSION) return
+        runCatching {
+            val names = context.assets.list("builtin_templates") ?: emptyArray()
+            for (name in names.filter { it.endsWith(".pptx", ignoreCase = true) }) {
+                val bytes = context.assets.open("builtin_templates/$name").use { it.readBytes() }
+                val hash = sha16(bytes)
+                templatesDir.mkdirs()
+                val f = File(templatesDir, "$hash.pptx")
+                if (!f.exists()) f.writeBytes(bytes)
+                touchRecent(hash, "内置示例模板.pptx")
+            }
+        }.onFailure { android.util.Log.w("AppState", "seed builtin templates failed", it) }
+        prefs.edit().putInt("builtin_seed_version", BUILTIN_SEED_VERSION).apply()
     }
 
     fun navigate(route: Route) {
@@ -189,6 +233,13 @@ class AppState(private val context: Context) {
                 rowCount = r.getInt("row_count"),
                 matched = r.getJSONArray("matched").toStringList(),
                 unmatched = r.getJSONArray("unmatched").toStringList(),
+                issues = r.optJSONArray("issues")?.let { arr ->
+                    (0 until arr.length()).map { i ->
+                        val o = arr.getJSONObject(i)
+                        PrecheckIssueInfo(o.getInt("slide"), o.optString("shape"),
+                            o.optString("code"), o.optString("message"))
+                    }
+                } ?: emptyList(),
             )
             // 套用记住的字段配置（模板名+字段指纹命中才生效）
             val restored = parseConfigs(loadFieldConfigsJson(context, name, info.fields))
@@ -199,6 +250,7 @@ class AppState(private val context: Context) {
             restoredFromPrefs = restored.isNotEmpty()
             phase = Phase.Idle
             results = emptyList()
+            failedRows = emptyList()
             progress = 0 to 0
             ensureThumb(hash, info.sid)
         } catch (e: PyException) {
@@ -273,41 +325,73 @@ class AppState(private val context: Context) {
         if (phase == Phase.Rendering) return
         phase = Phase.Rendering
         results = emptyList()
+        failedRows = emptyList()
         progress = 0 to s.rowCount
         avgMs = 0.0
         batchJob = scope.launch(gate) {
             val outRoot = File(context.filesDir, "batch").apply { deleteRecursively(); mkdirs() }
-            val outs = mutableListOf<String>()
-            val t0 = System.currentTimeMillis()
-            var done = 0
-            try {
-                // 渲染前兜底推送一次当前字段配置
-                runCatching { pushConfigsDirect(s.sid, s.fields, fieldConfigs) }
-                for (i in 0 until s.rowCount) {
-                    ensureActive()
-                    val rowDir = File(outRoot, "row_$i")
-                    val imgs = py().callAttr("render_index", s.sid, i, rowDir.absolutePath)
+            renderRows(outRoot, s, (0 until s.rowCount).toList(), append = false)
+        }
+    }
+
+    /** 只重跑失败的数据行（保留已成功的结果，同一输出目录） */
+    fun retryFailedRows() {
+        val s = session ?: return
+        val failed = failedRows
+        if (failed.isEmpty() || phase == Phase.Rendering) return
+        phase = Phase.Rendering
+        failedRows = emptyList()
+        batchJob = scope.launch(gate) {
+            val outRoot = File(context.filesDir, "batch")
+            renderRows(outRoot, s, failed.map { it.index }, append = true)
+        }
+    }
+
+    /**
+     * 渲染指定行集合：单行失败记入 failedRows 并继续（批量容错），
+     * 仅环境级错误（Python 崩溃/取消）终止。append=true 时新产物追加到已有结果。
+     */
+    private suspend fun renderRows(outRoot: File, s: SessionInfo, indices: List<Int>, append: Boolean) {
+        val outs = mutableListOf<String>()
+        val newFailed = mutableListOf<RowFailure>()
+        val t0 = System.currentTimeMillis()
+        var done = 0
+        try {
+            // 渲染前兜底推送一次当前字段配置
+            runCatching { pushConfigsDirect(s.sid, s.fields, fieldConfigs) }
+            for (i in indices) {
+                coroutineContext.ensureActive()
+                val rowDir = File(outRoot, "row_$i").apply { deleteRecursively() }
+                try {
+                    outs += py().callAttr("render_index", s.sid, i, rowDir.absolutePath)
                         .asList().map { it.toString() }
-                    outs += imgs
-                    done = i + 1
-                    progress = done to s.rowCount
-                    avgMs = (System.currentTimeMillis() - t0).toDouble() / maxOf(1, done)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    newFailed += RowFailure(i, i + 2, (e.message ?: "未知错误").take(160))
                 }
-                results = outs
-                phase = Phase.Done
-                message = "批量完成：${outs.size} 张，平均 ${avgMs.toInt()}ms/张"
-            } catch (e: CancellationException) {
-                results = outs
-                phase = Phase.Done
-                message = "已取消（完成 $done/${s.rowCount} 张）"
-            } catch (e: PyException) {
-                results = outs
-                phase = Phase.Done
-                message = "渲染中断: ${e.message}（已完成 $done 张）"
-            } catch (e: Exception) {
-                phase = Phase.Idle
-                message = "渲染失败: ${e.message}"
+                done++
+                progress = done to indices.size
+                avgMs = (System.currentTimeMillis() - t0).toDouble() / maxOf(1, done)
             }
+            results = if (append) results + outs else outs
+            failedRows = newFailed
+            phase = Phase.Done
+            message = if (newFailed.isEmpty()) {
+                "批量完成：${results.size} 张，平均 ${avgMs.toInt()}ms/张"
+            } else {
+                "完成 ${results.size} 张，${newFailed.size} 行失败（可重试）"
+            }
+        } catch (e: CancellationException) {
+            results = if (append) results + outs else outs
+            failedRows = newFailed
+            phase = Phase.Done
+            message = "已取消（本次完成 $done/${indices.size} 张）"
+        } catch (e: Exception) {
+            results = if (append) results + outs else outs
+            failedRows = newFailed
+            phase = Phase.Idle
+            message = "渲染失败: ${e.message}"
         }
     }
 
@@ -465,7 +549,11 @@ class AppState(private val context: Context) {
         }
     }
 
-    companion object { private const val MAX_RECENTS = 12 }
+    companion object {
+        private const val MAX_RECENTS = 12
+        /** 内置模板预置版本：业务模板更新后 +1 可让升级用户重新预置 */
+        private const val BUILTIN_SEED_VERSION = 1
+    }
 }
 
 private fun org.json.JSONArray.toStringList(): List<String> =

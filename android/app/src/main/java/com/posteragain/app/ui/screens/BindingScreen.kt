@@ -107,6 +107,49 @@ fun BindingScreen(state: AppState) {
                 Spacer(Modifier.height(10.dp))
             }
 
+            // 渲染预检提示条（近似渲染效果知情告知）
+            if (s.issues.isNotEmpty()) {
+                var expanded by remember { mutableStateOf(false) }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    modifier = Modifier.fillMaxWidth()
+                        .clickable { expanded = !expanded }
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Info, contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "本模板有 ${s.issues.size} 项近似渲染效果" +
+                                    if (expanded) "（点击收起）" else "（点击查看）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer)
+                        }
+                        if (expanded) {
+                            Spacer(Modifier.height(8.dp))
+                            s.issues.take(8).forEach {
+                                Text("· 第${it.slide}页 ${it.message}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer)
+                            }
+                            if (s.issues.size > 8) {
+                                Text("……等共 ${s.issues.size} 项",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer)
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text("导出图片将与 PowerPoint 打开效果略有差异；如需完全一致请在电脑端使用 Office 高保真导出。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+
             // 字段卡片列表
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 s.fields.forEach { field ->

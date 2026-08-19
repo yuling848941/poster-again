@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -123,7 +124,7 @@ private fun RenderingBody(state: AppState) {
 
 @Composable
 private fun ResultBody(state: AppState) {
-    if (state.results.isEmpty()) {
+    if (state.results.isEmpty() && state.failedRows.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("没有可展示的海报", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -139,11 +140,59 @@ private fun ResultBody(state: AppState) {
                 contentDescription = null,
                 tint = PosterTheme.extended.success, modifier = Modifier.size(28.dp))
             Spacer(Modifier.width(10.dp))
-            Text("${state.results.size} 张海报已就绪",
+            Text(
+                if (state.failedRows.isEmpty()) "${state.results.size} 张海报已就绪"
+                else "${state.results.size} 张已就绪 · ${state.failedRows.size} 行失败",
                 style = MaterialTheme.typography.titleMedium)
         }
-        ResultGrid(state, Modifier.weight(1f))
-        FloatingActionBar(state)
+        if (state.failedRows.isNotEmpty()) FailureCard(state)
+        if (state.results.isNotEmpty()) {
+            ResultGrid(state, Modifier.weight(1f))
+            FloatingActionBar(state)
+        } else {
+            Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+/** 失败行卡片：行号+原因，可单独重试（批量容错） */
+@Composable
+private fun FailureCard(state: AppState) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                "${state.failedRows.size} 行数据生成失败（其余不受影响）",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(6.dp))
+            state.failedRows.take(5).forEach { f ->
+                Text(
+                    "第 ${f.rowNumber} 行：${f.error}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (state.failedRows.size > 5) {
+                Text("……等共 ${state.failedRows.size} 行",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(8.dp))
+            FilledTonalButton(
+                onClick = { state.retryFailedRows() },
+                enabled = state.phase != AppState.Phase.Rendering,
+                shape = RoundedCornerShape(50)
+            ) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null,
+                    modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("重试失败行")
+            }
+        }
     }
 }
 

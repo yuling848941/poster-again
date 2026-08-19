@@ -25,23 +25,49 @@ def render_pptx_to_png(pptx_bytes, out_dir):
 
 def start_session(pptx_bytes, data_bytes=None, filename=''):
     """
-    打开批量会话：解析模板占位符 + 数据行 + 字段匹配。
-    Returns: JSON 字符串 {session, fields, headers, row_count, matched[], unmatched[]}
+    打开批量会话：解析模板占位符 + 数据行 + 字段匹配 + 模板渲染预检。
+    Returns: JSON 字符串 {session, fields, headers, row_count, matched[],
+    unmatched[], issues[{slide, shape, code, message}]}
+    issues 为模板级渲染预检问题（近似渲染/字体回退提示），空列表 = 完全支持。
     """
     import json
-    from render_core import Personalizer, match_fields
+    import os
+    import tempfile
+    from render_core import Personalizer, match_fields, RenderPrecheck, font_registry
     from render_core.data_rows import read_rows
-    pz = Personalizer(bytes(pptx_bytes))
+    raw = bytes(pptx_bytes)
+    pz = Personalizer(raw)
     fields = pz.fields()
     headers, rows = [], []
     if data_bytes is not None:
         headers, rows = read_rows(bytes(data_bytes), str(filename))
     matches = match_fields(fields, headers)
+
+    # 模板级预检（一次，毫秒级 XML 扫描；字体集=捆绑思源，命中 FONT_MISSING 即安卓端会回退）
+    issues = []
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(suffix='.pptx')
+        with os.fdopen(fd, 'wb') as f:
+            f.write(raw)
+        installed = font_registry.available_typefaces()
+        for it in RenderPrecheck(installed_fonts=installed).check_pptx(tmp_path):
+            issues.append({'slide': it.slide, 'shape': it.shape,
+                           'code': it.code, 'message': it.message})
+    except Exception as e:  # 预检失败不阻塞会话
+        print(f"[预检] 跳过: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
     sid = 's%d' % (len(_sessions) + 1)
     _sessions[sid] = {'pz': pz, 'headers': headers, 'rows': rows,
                       'matches': matches, 'manual': {}}
     print(f"[批量] 模板占位符 {len(fields)} 个：{fields}")
-    print(f"[批量] 数据 {len(rows)} 行 × {len(headers)} 列；匹配 {len(matches)} 个字段")
+    print(f"[批量] 数据 {len(rows)} 行 × {len(headers)} 列；匹配 {len(matches)} 个字段；预检 {len(issues)} 项")
     return json.dumps({
         'session': sid,
         'fields': fields,
@@ -49,6 +75,7 @@ def start_session(pptx_bytes, data_bytes=None, filename=''):
         'row_count': len(rows),
         'matched': [f'{f} → {h}' for f, h in matches.items()],
         'unmatched': [f for f in fields if f not in matches],
+        'issues': issues,
     }, ensure_ascii=False)
 
 
