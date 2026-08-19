@@ -25,7 +25,9 @@
   （2026-08-18 真机+真模板收官：测试模板 623ms、50MB 每日贺报 3445ms/张、
   峰值 PSS ~233MB、预检零问题、与 PC 渲染差异 0.002% 像素——业务验收通过；
   release 单 ABI 构建仍待做）
-- [ ] 4.3 render_core 双副本同步脚本化
+- [x] 4.3 render_core 双副本同步脚本化
+  （2026-08-19 完成：tools/sync_render_core.py——src/render_core → 安卓副本单向
+  同步 *.py，LF 归一，跳过安卓专属 resources/ 字体；--check 防漂移模式供 CI）
 
 ## 5. Phase A 批量个性化（2026-08-18 完成）
 - [x] 5.1 `render_core/personalize.py`：Personalizer——模板一次加载，fields() 识别
