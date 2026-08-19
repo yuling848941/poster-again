@@ -7,6 +7,12 @@ matching_rules + text_addition_rules）。"""
 _sessions = {}
 
 
+def set_env(key, value):
+    """供 Kotlin 注入环境变量（如 POSTERAGAIN_FONT_POLICY，font_registry 惰性读取）"""
+    import os
+    os.environ[str(key)] = str(value)
+
+
 def render_pptx_to_png(pptx_bytes, out_dir):
     """单模板快渲染（无数据替换）；预检问题 print 到 logcat"""
     from render_core import render, font_registry

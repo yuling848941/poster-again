@@ -19,6 +19,7 @@ python -m venv .venv
 
 # 安卓端（android/ 工程；SDK 在 %LOCALAPPDATA%\Android\Sdk，Gradle 8.6 在 %LOCALAPPDATA%\gradle-8.6）
 cd android && "$LOCALAPPDATA/gradle-8.6/bin/gradle.bat" assembleDebug   # Build debug APK
+.venv/Scripts/python.exe android/e2e_batch.py                         # 模拟器全流程 E2E（选模板→数据→字段绑定→渲染→预览；需已启动模拟器，会 pm clear 应用）
 ```
 
 ⚠️ **打包必须用 `.venv`**：系统 Python 装了 PyTorch 等大量无关库，用系统 Python 打包会让 PyInstaller 误卷入 7GB+ 垃圾库，导致 exe 体积爆炸或打包失败。
@@ -48,7 +49,7 @@ No pytest config, no `conftest.py`, no `pyproject.toml`. Tests are standalone Py
 | `src/memory_management/` | In-memory data caching and optimization |
 | `config_manager.py` | Root-level compat shim — delegates to `src/config/` |
 | `config/config.yaml` | App config (paths, matching rules, UI state). Loaded by `ConfigManager` |
-| `android/` | Android shell app (Kotlin + Compose + Chaquopy 16.1.0 / Python 3.12) embedding a copy of `render_core` + bundled fonts under `app/src/main/python/` |
+| `android/` | Android shell app (Kotlin + Compose + Chaquopy 16.1.0 / Python 3.12) embedding a copy of `render_core` + bundled fonts under `app/src/main/python/`. UI 为多屏 Compose（`AppState.kt` 状态容器 + `ui/screens/` 六屏：首页向导/字段绑定/渲染/大图预览/模板/设置），主题色板来自 Stitch 设计稿（`ui/theme/Theme.kt`，深青 primary + success 扩展色）；桥接层 `app/src/main/python/poster_bridge.py`（PC 侧单测 `tests/unit/test_poster_bridge.py`，模拟器 E2E `android/e2e_batch.py`） |
 
 ### Import pattern
 
