@@ -41,10 +41,12 @@ def test_office_cache():
 
         # 保存缓存
         print("\n[2] 保存 Office 缓存...")
+        # path 必须指向真实存在的路径：load_office_cache 会校验它（CI 上没有
+        # Office，写死的 C:\Program Files\... 会校验失败）。用临时目录自身。
         office_info = {
             "type": "microsoft",
             "name": "Microsoft Office PowerPoint",
-            "path": "C:\\Program Files\\Microsoft Office\\root\\Office16",
+            "path": tmp_dir,
             "version": "16.0",
         }
         ok = config_manager.save_office_cache(office_info)

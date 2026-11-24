@@ -37,8 +37,17 @@ LIB_RUNNERS = [
 
 # 默认跳过的用例（--all 可包含）：
 # - 需要本机真实 PowerPoint COM / 特定业务文件的用例，CI 与无 Office 环境跑不了
+# - 标 [samples] 的用例引用 samples/ 下的私有业务文件（gitignored，CI 上不存在）
+#   本机装有这些文件时会正常执行；脚本内部也有"文件不存在则跳过"的保护
 SKIP_LIST = {
     "test_com_processor.py",        # 真实 COM（需本机 PowerPoint）
+    "test_com_exporter_no_kill.py", # 真实 COM 进程场景（需本机 PowerPoint）
+    "test_placeholder_fix.py",      # [samples] 真实贺报模板
+    "test_final_fix.py",            # [samples] 真实贺报模板
+    "test_dual_dialog.py",          # [samples] 承保.pptcfg
+    "test_single_dialog.py",        # [samples] 承保.pptcfg
+    "test_with_fixed_logic.py",     # [samples] 递交.pptcfg
+    "test_filename_name_field.py",  # [samples] 真实 KA 数据 xlsx
 }
 
 
