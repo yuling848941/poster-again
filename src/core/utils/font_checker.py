@@ -10,19 +10,13 @@ import re
 from typing import Set, List, Dict, Optional
 from pathlib import Path
 
-try:
-    from src.core.processors import font_registry
-except ImportError:
-    from core.processors import font_registry
+from render_core import font_registry
 
 logger = logging.getLogger(__name__)
 
 
 class FontChecker:
     """检查 PPTX 模板使用的字体是否已安装到系统"""
-
-    # Windows 字体目录
-    SYSTEM_FONTS_DIR = os.path.join(os.environ.get('WINDIR', 'C:\\Windows'), 'Fonts')
 
     # 系统默认字体（主题字体，通常不需要提醒）
     SYSTEM_THEME_FONTS = {
@@ -68,60 +62,10 @@ class FontChecker:
         self._installed_fonts: Optional[Set[str]] = None
 
     def get_installed_fonts(self) -> Set[str]:
-        """获取系统已安装的字体名称集合"""
-        if self._installed_fonts is not None:
-            return self._installed_fonts
-
-        fonts = set()
-
-        try:
-            # 方法 1: 从注册表读取（最准确）
-            try:
-                import winreg
-                key = winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE,
-                    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
-                )
-                i = 0
-                while True:
-                    try:
-                        value = winreg.EnumValue(key, i)
-                        name = value[0]  # 字体名称（如 "Arial (TrueType)"）
-                        # 提取字体名称（去掉文件扩展名和 (TrueType) 等后缀）
-                        font_name = name.split('(')[0].strip().lower()
-                        fonts.add(font_name)
-                        fonts.add(name.lower())
-                        i += 1
-                    except OSError:
-                        break
-                winreg.CloseKey(key)
-            except Exception as e:
-                logger.debug(f"读取注册表字体失败: {e}")
-
-            # 方法 2: 从字体文件目录读取文件名
-            if os.path.exists(self.SYSTEM_FONTS_DIR):
-                for filename in os.listdir(self.SYSTEM_FONTS_DIR):
-                    if filename.lower().endswith(('.ttf', '.otf', '.ttc')):
-                        # 使用文件名作为字体名称的参考
-                        fonts.add(filename.lower())
-                        # 添加常见字体文件名映射
-                        font_file_map = {
-                            'msyh.ttc': '微软雅黑',
-                            'msyhbd.ttc': '微软雅黑 bold',
-                            'msyhl.ttc': '微软雅黑 light',
-                            'simsun.ttc': '宋体',
-                            'simhei.ttf': '黑体',
-                            'kaiti.ttf': '楷体',
-                            'fangsong.ttf': '仿宋',
-                        }
-                        if filename.lower() in font_file_map:
-                            fonts.add(font_file_map[filename.lower()].lower())
-
-        except Exception as e:
-            logger.warning(f"获取系统字体失败：{e}")
-
-        self._installed_fonts = fonts
-        return fonts
+        """获取系统已安装的字体名称集合（每个实例缓存一次；枚举逻辑在 render_core 里）"""
+        if self._installed_fonts is None:
+            self._installed_fonts = font_registry.installed_system_fonts()
+        return self._installed_fonts
 
     def get_fonts_from_pptx(self, pptx_path: str) -> Dict[str, List[str]]:
         """

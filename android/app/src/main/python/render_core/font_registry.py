@@ -503,6 +503,59 @@ def resolve(typeface: Optional[str], bold: bool = False) -> FontSpec:
     return FontSpec(msyh, METRICS_MS_YAHEI, 'system', '')
 
 
+def installed_system_fonts() -> Set[str]:
+    """系统已安装字体的名字集合（小写），供预检/字体检查判断「模板里的字体是否可用」。
+
+    Windows 读注册表 + Fonts 目录；其他平台或读取失败时返回空集，不抛异常。
+    每次调用都重新读取（调用方按需缓存），应用运行期间新装的字体能被下一批任务看到。
+    """
+    fonts: Set[str] = set()
+    try:
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+            )
+            i = 0
+            while True:
+                try:
+                    name = winreg.EnumValue(key, i)[0]   # 形如 "Arial (TrueType)"
+                    font_name = name.split('(')[0].strip().lower()
+                    fonts.add(font_name)
+                    fonts.add(name.lower())
+                    i += 1
+                except OSError:
+                    break
+            winreg.CloseKey(key)
+        except Exception as e:
+            logger.debug(f"读取注册表字体失败: {e}")
+
+        # 方法 2: 从字体文件目录读取文件名
+        fonts_dir = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+        if os.path.exists(fonts_dir):
+            # 常见字体文件名 -> 字体名
+            font_file_map = {
+                'msyh.ttc': '微软雅黑',
+                'msyhbd.ttc': '微软雅黑 bold',
+                'msyhl.ttc': '微软雅黑 light',
+                'simsun.ttc': '宋体',
+                'simhei.ttf': '黑体',
+                'kaiti.ttf': '楷体',
+                'fangsong.ttf': '仿宋',
+            }
+            for filename in os.listdir(fonts_dir):
+                lower = filename.lower()
+                if not lower.endswith(('.ttf', '.otf', '.ttc')):
+                    continue
+                fonts.add(lower)                      # 文件名作为字体名称的参考
+                if lower in font_file_map:
+                    fonts.add(font_file_map[lower].lower())
+    except Exception as e:
+        logger.warning(f"获取系统字体失败：{e}")
+    return fonts
+
+
 def is_resolvable(typeface: str) -> bool:
     """该字体名是否有直接命中的字体文件（不含默认链回退）；供字体检查/预检用"""
     return any(l(typeface, b) is not None

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pptx-render-core"
+version = "0.1.0"
+description = "Pure-Python PPTX to image renderer (Pillow) with gradient, glowing, shadowed and stroked text"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "python-pptx>=0.6.21",
+    "lxml",
+    "Pillow>=9.2",
+    "fontfx",
+]
+keywords = ["pptx", "powerpoint", "render", "pillow", "poster", "gradient"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Office/Business",
+]
+
+[project.optional-dependencies]
+# 渐变走向量化实现；不装也能跑（自动退化为纯 Pillow 路径）
+numpy = ["numpy>=1.24"]
+# 用 fontTools 读字体内部名（判断粗体更可靠）；不装则退化为 Pillow 读家族名
+fontinfo = ["fonttools"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+render_core = ["resources/fonts/*.otf"]

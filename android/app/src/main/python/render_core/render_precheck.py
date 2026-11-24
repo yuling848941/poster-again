@@ -52,16 +52,10 @@ from typing import List, Optional, Set
 from pptx import Presentation
 from pptx.oxml.ns import qn
 
-try:
-    from src.render_core.format_inheritance import (
-        FormatResolver, load_theme, resolve_bg_ref,
-    )
-    from src.render_core.shape_geometry import SUPPORTED_PRST
-except ImportError:
-    from render_core.format_inheritance import (
-        FormatResolver, load_theme, resolve_bg_ref,
-    )
-    from render_core.shape_geometry import SUPPORTED_PRST
+from .format_inheritance import (
+    FormatResolver, load_theme, resolve_bg_ref,
+)
+from .shape_geometry import SUPPORTED_PRST
 
 logger = logging.getLogger(__name__)
 

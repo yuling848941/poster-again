@@ -1,44 +1,47 @@
 # -*- coding: utf-8 -*-
 """
-render_core：自包含的 PPTX→图片渲染核心（跨平台，安卓/嵌入/GUI 共用）
+render_core：自包含的 PPTX→图片渲染核心（跨平台，桌面 / 安卓 / 嵌入共用）
 ================================================================
 包含：pillow_image_exporter（渲染引擎）+ render_precheck（白名单预检）
 + format_inheritance（OOXML 格式继承解析）+ shape_geometry（预设形状几何）
 + font_registry（字体解析与排版校准常数，捆绑字体在 resources/fonts/）
++ personalize / data_rows（「数据行 → 个性化海报」的批量管线）
+
+分工：本库负责 PPTX 语义——格式继承、排字、算出每个字形的位置；
+「这个字长什么样」（渐变 / 图片填充 / 发光 / 阴影 / 描边 / 装饰线）
+交给底层库 fontfx。
 
 对外入口：
     render(pptx, output_dir, ...) -> RenderResult        # 一句话渲染（推荐）
     Personalizer / read_rows / match_fields               # 个性化批量管线
     PillowImageExporter / RenderPrecheck                  # 细粒度控制
 
-依赖闭包：{标准库, python-pptx(→lxml), Pillow, numpy(仅文字渐变)}，
-无 GUI / 无 pandas / 无配置文件 —— 安卓 Chaquopy 嵌入零改动即可使用。
+依赖闭包：{标准库, python-pptx(→lxml), Pillow, fontfx, numpy(可选，渐变加速)}，
+无 GUI / 无 pandas / 无配置文件。
 字体策略默认 auto（Windows 系统优先 / 其他平台捆绑优先），
 可用 font_registry.set_policy() 或环境变量 POSTERAGAIN_FONT_POLICY 覆盖。
 
-嵌入到其他工程（如安卓）只需拷贝：
-    src/render_core/  +  resources/fonts/
+用法：``pip install pptx-render-core``，然后 ``from render_core import render``。
+没法走 pip 的环境（如安卓 Chaquopy）把本包、resources/fonts/ 和 fontfx 一起拷过去即可。
 """
 import os
 import tempfile
 from typing import List, NamedTuple, Union
 
-try:
-    from src.render_core.pillow_image_exporter import PillowImageExporter
-    from src.render_core.render_precheck import PrecheckIssue, RenderPrecheck
-    from src.render_core import font_registry
-    from src.render_core.personalize import Personalizer, match_fields, row_base_name
-    from src.render_core.data_rows import read_rows
-except ImportError:
-    from render_core.pillow_image_exporter import PillowImageExporter
-    from render_core.render_precheck import PrecheckIssue, RenderPrecheck
-    from render_core import font_registry
-    from render_core.personalize import Personalizer, match_fields, row_base_name
-    from render_core.data_rows import read_rows
+from . import font_registry
+from .data_rows import read_rows
+from .personalize import (
+    Personalizer, match_fields, row_base_name, restore_slides, snapshot_slides,
+)
+from .pillow_image_exporter import PillowImageExporter
+from .render_precheck import PrecheckIssue, RenderPrecheck
+
+__version__ = '0.1.0'
 
 __all__ = ['render', 'RenderResult', 'PillowImageExporter', 'RenderPrecheck',
            'PrecheckIssue', 'font_registry', 'Personalizer', 'read_rows',
-           'match_fields', 'row_base_name']
+           'match_fields', 'row_base_name', 'restore_slides', 'snapshot_slides',
+           '__version__']
 
 
 class RenderResult(NamedTuple):

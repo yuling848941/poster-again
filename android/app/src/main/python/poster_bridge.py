@@ -3,6 +3,11 @@
 会话式批量管线：模板 Presentation 只解析一次，逐行"替换->渲染->恢复"。
 字段配置：自动匹配 + 手动绑定（数据列/固定值/前后缀，语义对齐 PC 端
 matching_rules + text_addition_rules）。"""
+import os
+
+# 渲染引擎会把「缩放后的图片位图」缓存起来供逐行复用（海报背景图每行都一样）。
+# 默认上限 256MB 是按桌面内存给的，手机上收到 64MB。
+os.environ.setdefault('POSTERAGAIN_PIC_CACHE_MB', '64')
 
 _sessions = {}
 

@@ -22,12 +22,8 @@ from lxml import etree
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-try:
-    from src.render_core.pillow_image_exporter import PillowImageExporter
-    from src.render_core.format_inheritance import load_theme
-except ImportError:
-    from render_core.pillow_image_exporter import PillowImageExporter
-    from render_core.format_inheritance import load_theme
+from .pillow_image_exporter import PillowImageExporter
+from .format_inheritance import load_theme
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +161,30 @@ def row_base_name(headers: List[str], row: Dict[str, str], index: int) -> str:
     return sanitize_filename(f"{index + 1}_{name_value}")
 
 
+def snapshot_slides(prs) -> List[bytes]:
+    """缓存各幻灯片元素的原始 XML，供 restore_slides 恢复（模板只加载一次的关键）。"""
+    return [etree.tostring(s._element) for s in prs.slides]
+
+
+def restore_slides(prs, slide_xml: List[bytes]) -> None:
+    """把幻灯片恢复到 snapshot_slides 时的原状（配合就地替换复用同一 Presentation）。
+
+    只就地替换 spTree 的子元素——python-pptx 的 Slide.shapes 是惰性缓存，
+    持有 spTree 元素对象引用；整树替换会使缓存指向游离的旧树，后续替换改到
+    孤儿节点上（静默失效）。占位符替换只动 spTree 内的文本，母版/版式/主题不受
+    影响，因此恢复 spTree 即等价于重新加载模板，但无需重新解压解析整个包。
+    """
+    P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
+    for slide, xml in zip(prs.slides, slide_xml):
+        fresh = etree.fromstring(xml)
+        fresh_sp = fresh.find(f'{{{P}}}cSld/{{{P}}}spTree')
+        spTree = slide.shapes._spTree   # python-pptx 缓存持有的同一元素
+        for child in list(spTree):
+            spTree.remove(child)
+        for child in fresh_sp:
+            spTree.append(child)
+
+
 class Personalizer:
     """模板个性化会话：一次加载，逐行 替换->渲染->恢复"""
 
@@ -189,14 +209,11 @@ class Personalizer:
             with open(pptx, 'rb') as f:
                 self._template_bytes = f.read()
             self._theme = load_theme(pptx)
-        try:
-            from src.render_core import font_registry
-        except ImportError:
-            from render_core import font_registry
+        from . import font_registry
         font_registry.load_embedded_fonts(self._template_bytes)
         self._prs = Presentation(io.BytesIO(self._template_bytes))
         # 幻灯片原始 XML 缓存（恢复用；主题/图片等部件不受文本替换影响）
-        self._slide_xml = [etree.tostring(s._element) for s in self._prs.slides]
+        self._slide_xml = snapshot_slides(self._prs)
         self._exporter = PillowImageExporter()
 
     # ---------------- 查询 ----------------
@@ -239,19 +256,8 @@ class Personalizer:
         return replaced
 
     def restore(self):
-        """恢复模板原状（配合 apply 复用同一 Presentation）。
-        注意：只就地替换 spTree 的子元素——python-pptx 的 Slide.shapes 是
-        惰性缓存，持有 spTree 元素对象引用；整树替换会使缓存指向游离的旧树，
-        后续 apply 改到孤儿节点上（静默失效）。"""
-        P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
-        for slide, xml in zip(self._prs.slides, self._slide_xml):
-            fresh = etree.fromstring(xml)
-            fresh_sp = fresh.find(f'{{{P}}}cSld/{{{P}}}spTree')
-            spTree = slide.shapes._spTree   # python-pptx 缓存持有的同一元素
-            for child in list(spTree):
-                spTree.remove(child)
-            for child in fresh_sp:
-                spTree.append(child)
+        """恢复模板原状（配合 apply 复用同一 Presentation）。"""
+        restore_slides(self._prs, self._slide_xml)
 
     def render_row(self, row: Dict[str, object], output_dir: str,
                    image_format: str = 'PNG', quality: float = 1.0) -> List[str]:

@@ -18,6 +18,18 @@ PyYAML>=6.0
 # 内存监控
 psutil>=5.9
 
-# 图片导出功能（可选）：仅 Windows 上需要，用于通过 COM 接口调用 Office/WPS 导出 PPT 为图片
-# PPT 生成本身不需要此依赖；未安装时图片导出功能不可用，其他功能正常
+# 图片处理：内置渲染引擎（render_core）与文字特效库（fontfx）的基础
+Pillow>=9.2
+
+# 读字体内部名（判断粗体更可靠）；渲染库的可选增强，没装时退化为 Pillow 读家族名
+fonttools>=4.40
+
+# 图片导出的 Office 高保真引擎（可选）：仅 Windows，通过 COM 调用 Office/WPS。
+# 未安装时始终使用内置渲染引擎，其他功能不受影响
 pywin32>=305; sys_platform == "win32"
+
+# 仓库内自带的两个库，以可编辑方式安装（改 libs/ 下的源码即时生效）
+#   libs/fontfx       纯 Pillow 文字特效库：渐变 / 图片填充 / 发光 / 阴影 / 描边
+#   libs/render_core  PPTX -> 图片 渲染库，文字效果交给 fontfx
+-e ./libs/fontfx
+-e ./libs/render_core

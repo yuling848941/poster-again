@@ -16,6 +16,9 @@ from typing import Dict, List, Optional, Any, Callable
 import pandas as pd
 from pathlib import Path
 
+# 渲染引擎与文字特效是独立的库（libs/render_core、libs/fontfx），直接按包名导入
+from render_core import RenderPrecheck, font_registry
+
 # 导入自定义模块
 try:
     from src.core.processors.pptx_processor import PPTXProcessor
@@ -23,14 +26,12 @@ try:
     from src.core.factory.office_suite_factory import OfficeSuiteFactory
     from src.data_reader import DataReader
     from src.exact_matcher import ExactMatcher
-    from src.render_core import RenderPrecheck
 except ImportError:
     from core.processors.pptx_processor import PPTXProcessor
     from core.interfaces.template_processor import ITemplateProcessor
     from core.factory.office_suite_factory import OfficeSuiteFactory
     from data_reader import DataReader
     from exact_matcher import ExactMatcher
-    from render_core import RenderPrecheck
 
 # 设置日志 - 使用模块级 logger，避免 basicConfig 全局配置冲突
 logger = logging.getLogger(__name__)
@@ -48,11 +49,14 @@ class FailedRow:
 
 @dataclass
 class BatchResult:
-    """批量生成结果摘要（成功数 + 失败明细 + 模板预检提示）"""
+    """批量生成结果摘要（成功数 + 失败明细 + 降级明细 + 模板预检提示）"""
     success_count: int = 0
     failed_rows: List[FailedRow] = field(default_factory=list)
     total: int = 0
     precheck_issues: List[Any] = field(default_factory=list)  # List[PrecheckIssue]
+    # 图片导出失败、降级输出为 PPT 的行（仍计入成功数，但单独提示用户）
+    degraded_rows: List[FailedRow] = field(default_factory=list)
+    cancelled: bool = False     # 是否被用户中途取消（结果为已完成部分的摘要）
 
     def __int__(self) -> int:
         # 兼容旧调用方把返回值当成功计数使用
@@ -360,11 +364,6 @@ class PPTGenerator:
         if not self.template_path:
             return []
         try:
-            from src.render_core import font_registry
-        except ImportError:
-            from render_core import font_registry
-        try:
-            # 字体检查需要显式提供已安装字体集（与 PillowImageExporter.precheck 同源）
             installed = font_registry.available_typefaces()
             try:
                 try:
@@ -383,7 +382,8 @@ class PPTGenerator:
     def batch_generate(self, output_dir: str, progress_callback=None,
                       generate_images: bool = False, image_format: str = "PNG",
                       image_quality: float = 1.0,
-                      row_indices: Optional[List[int]] = None) -> BatchResult:
+                      row_indices: Optional[List[int]] = None,
+                      cancel_check: Optional[Callable[[], bool]] = None) -> BatchResult:
         """
         批量生成PPT或图片（GUI调用接口）
 
@@ -399,9 +399,12 @@ class PPTGenerator:
             image_quality: 图片缩放倍数 (1.0=原始, 2.0=增强, 3.0=高质量)
             row_indices: 只生成指定的 DataFrame 行标签列表（失败行重试用）；
                          None = 全部行
+            cancel_check: 可选回调，返回 True 时在下一行开始前中止批量，
+                          返回已完成部分的摘要（result.cancelled=True）
 
         Returns:
-            BatchResult: success_count / failed_rows / total / precheck_issues
+            BatchResult: success_count / failed_rows / degraded_rows / total /
+                         precheck_issues / cancelled
         """
         if not self.template_loaded:
             raise ValueError("模板未加载，请先调用load_template()")
@@ -424,6 +427,7 @@ class PPTGenerator:
 
             generated_count = 0
             failed_rows: List[FailedRow] = []
+            degraded_rows: List[FailedRow] = []
             data_count = len(self.data_reader.data)
 
             # 模板级渲染预检（只跑一次，结果随 BatchResult 上报界面）
@@ -436,10 +440,16 @@ class PPTGenerator:
             else:
                 to_process = sum(1 for i in self.data_reader.data.index if i in selected)
             processed_rows = 0
+            cancelled = False
 
             for index, row in self.data_reader.data.iterrows():
                 if selected is not None and index not in selected:
                     continue
+                # 每行开始前检查取消请求（协作式取消，最多再跑完当前一行）
+                if cancel_check is not None and cancel_check():
+                    cancelled = True
+                    logger.info(f"批量生成已取消（已完成 {processed_rows}/{to_process}）")
+                    break
                 processed_rows += 1
 
                 # 调用进度回调
@@ -514,22 +524,11 @@ class PPTGenerator:
                         logger.error(f"生成贺语文件时出错: {str(e)}")
 
                 if generate_images:
-                    # 生成图片
-                    # 注意：temp_pptx 必须在 try 外初始化为 None，
-                    # 这样 finally 块才能在 replace_placeholders 等步骤抛异常时也正确清理
-                    temp_pptx = None
+                    # 生成图片：export_to_images 内部按需写临时文件（COM 引擎）
+                    # 或直接内存渲染（内置引擎），这里不必再另存一份临时 PPT
                     try:
-                        # 使用PPTXProcessor的导出图片功能
-                        # 先替换占位符
                         self.template_processor.replace_placeholders(data)
-                        # 保存临时PPT（使用临时文件，不在输出目录）
-                        temp_pptx = tempfile.NamedTemporaryFile(suffix='.pptx', delete=False).name
-                        self.template_processor.save_presentation(temp_pptx)
-                        # 导出为图片到输出目录（不使用子文件夹）
                         os.makedirs(output_dir, exist_ok=True)
-
-                        # image_quality 已经是 float 缩放倍数，直接透传
-                        # 获取基础文件名（不含扩展名）
                         base_filename = os.path.splitext(filename)[0]
                         generated_files = self.template_processor.export_to_images(
                             output_dir=output_dir,
@@ -542,30 +541,27 @@ class PPTGenerator:
                             generated_count += 1
                             logger.info(f"生成图片成功: {filename} -> {len(generated_files)} 张图片")
                         else:
-                            _record_failure("export", "渲染引擎未产出图片（详见日志）")
+                            reason = getattr(self.template_processor, 'last_export_error', None)
+                            _record_failure("export", reason or "渲染引擎未产出图片（详见日志）")
                     except RuntimeError as e:
-                        # Office 未安装
+                        # Office 未安装（office 策略）等环境级致命错误，整批中止
                         logger.error(f"导出图片失败: {e}")
                         raise
                     except Exception as e:
                         logger.error(f"导出图片时出错: {str(e)}")
-                        # 如果导出图片失败，尝试生成PPT作为备选
+                        # 导出失败时降级输出 PPT，并单独记录为「降级行」提示用户
                         output_path = os.path.join(output_dir, f"{filename}.pptx")
                         try:
                             self.template_processor.replace_placeholders(data)
                             self.template_processor.save_presentation(output_path)
                             generated_count += 1
-                            logger.info(f"生成PPT: {output_path}")
+                            degraded_rows.append(FailedRow(
+                                index=index, row_number=row_number, name=row_name,
+                                stage='degraded', error=str(e)[:300]))
+                            logger.warning(f"第 {row_number} 行（{row_name}）图片导出失败，"
+                                           f"已降级输出 PPT: {output_path}（原因: {e}）")
                         except Exception as e2:
                             _record_failure("fallback", e2)
-                    finally:
-                        # 删除临时PPT文件
-                        if temp_pptx and os.path.exists(temp_pptx):
-                            try:
-                                os.remove(temp_pptx)
-                                logger.debug(f"删除临时PPT文件: {temp_pptx}")
-                            except Exception as e:
-                                logger.warning(f"删除临时PPT文件失败: {e}")
                 else:
                     # 生成PPT
                     output_path = os.path.join(output_dir, f"{filename}.pptx")
@@ -576,21 +572,25 @@ class PPTGenerator:
                         logger.info(f"生成PPT: {output_path}")
                     except Exception as e:
                         _record_failure("ppt", e)
-                        # 注意：失败后不能 continue，必须继续执行下方的 load_template，
+                        # 注意：失败后不能 continue，必须继续执行下方的 restore_template，
                         # 否则下一行会在被污染的内存模板上生成，导致数据串行（H2 修复）
 
-                # 重新加载模板以准备下一次生成（仅当还有后续待处理行）
+                # 恢复模板原状以准备下一次生成（仅当还有后续待处理行）。
+                # 用「恢复幻灯片 XML」代替重新加载：同一 Presentation 逐行复用，
+                # 省去每行重新解压解析整个包，渲染器的字体/图片缓存也跨行保留。
                 if processed_rows < to_process:
-                    self.template_processor.load_template(self.template_path)
+                    self.template_processor.restore_template()
 
-            # 重新加载模板，准备下一次批量生成
-            self.template_processor.load_template(self.template_path)
+            # 恢复模板原状，准备下一次批量生成
+            self.template_processor.restore_template()
 
             result = BatchResult(
                 success_count=generated_count,
                 failed_rows=failed_rows,
                 total=to_process,
                 precheck_issues=precheck_issues,
+                degraded_rows=degraded_rows,
+                cancelled=cancelled,
             )
             if failed_rows:
                 logger.warning(f"批量生成完成：成功 {generated_count}/{to_process}，"

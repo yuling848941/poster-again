@@ -15,6 +15,16 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
+from render_core.pillow_image_exporter import PillowImageExporter
+from render_core.format_inheritance import load_theme
+from render_core.personalize import snapshot_slides, restore_slides
+from render_core import font_registry
+
+try:
+    from src.core.utils.pptx_fast_save import save_pptx
+except ImportError:
+    from core.utils.pptx_fast_save import save_pptx
+
 try:
     from src.core.interfaces.template_processor import (
         ITemplateProcessor,
@@ -53,6 +63,15 @@ class PPTXProcessor(ITemplateProcessor):
         super().__init__()
         self.presentation: Optional[Presentation] = None
         self.template_path: Optional[str] = None
+        # 批量渲染的复用缓存（生命周期 ≈ 一个批次；批次结束后处理器会被重建）：
+        # 引擎按策略缓存，避免每行重新检测 Office；渲染上下文按模板缓存
+        self._engine_cache: Dict[str, tuple] = {}
+        self._engine_strategy: Optional[str] = None     # 本实例解析出的引擎策略（缓存）
+        self._python_exporter: Optional[PillowImageExporter] = None
+        self._render_theme: Optional[tuple] = None      # (template_path, theme)
+        self._precheck_done: Optional[str] = None       # 已跑过预检的模板路径
+        self._slide_xml = None                          # 幻灯片原始 XML 快照（恢复用）
+        self.last_export_error: Optional[str] = None    # 最近一次导出失败的原因（供上层透出）
         
     def connect_to_application(self) -> bool:
         """
@@ -88,7 +107,13 @@ class PPTXProcessor(ITemplateProcessor):
             # 使用 python-pptx 加载演示文稿
             self.presentation = Presentation(template_path)
             self.template_path = template_path
-            
+            # 幻灯片原始 XML 快照：批量生成逐行「替换 -> 恢复」复用同一 Presentation，
+            # 不必每行重新解压解析整个包（也让渲染器的图片缓存跨行生效）
+            self._slide_xml = snapshot_slides(self.presentation)
+            # 模板变了，渲染上下文缓存作废
+            self._render_theme = None
+            self._precheck_done = None
+
             logger.info(f"成功加载模板: {template_path}")
             logger.info(f"幻灯片数量: {len(self.presentation.slides)}")
             return True
@@ -96,7 +121,19 @@ class PPTXProcessor(ITemplateProcessor):
         except Exception as e:
             logger.error(f"加载模板失败: {str(e)}")
             raise TemplateLoadError(f"无法加载模板文件: {str(e)}")
-    
+
+    def restore_template(self) -> bool:
+        """把当前 Presentation 恢复到加载时的模板原状（撤销占位符替换）。
+
+        批量生成逐行复用同一 Presentation：替换 -> 导出/保存 -> 恢复。
+        与重新 load_template 等价（占位符替换只动幻灯片 spTree 内的文本），
+        但无需重新解压解析整个包，渲染器的字体/图片缓存也得以跨行保留。
+        """
+        if not self.presentation or self._slide_xml is None:
+            return False
+        restore_slides(self.presentation, self._slide_xml)
+        return True
+
     def _get_alt_text(self, shape) -> str:
         """
         获取形状的Alt Text（替代文本）
@@ -452,8 +489,9 @@ class PPTXProcessor(ITemplateProcessor):
             if output_dir and not os.path.exists(output_dir):
                 os.makedirs(output_dir)
             
-            # 保存演示文稿
-            self.presentation.save(output_path)
+            # 保存演示文稿（已压缩媒体不再重复 deflate，大模板提速明显；
+            # 首次使用会自动与标准保存逐成员校验，不一致则退回标准保存）
+            save_pptx(self.presentation, output_path)
             
             logger.info(f"成功保存演示文稿: {output_path}")
             return True
@@ -469,6 +507,7 @@ class PPTXProcessor(ITemplateProcessor):
                 # python-pptx 不需要显式关闭，只需释放引用
                 self.presentation = None
                 self.template_path = None
+                self._slide_xml = None
                 logger.info("已关闭演示文稿")
         except Exception as e:
             logger.error(f"关闭演示文稿失败: {str(e)}")
@@ -510,8 +549,9 @@ class PPTXProcessor(ITemplateProcessor):
         """
         导出演示文稿为图片
 
-        使用纯 Python 渲染引擎（Pillow），无需 Microsoft Office / WPS Office。
-        （COM 导出路径已在纯 Python 分支中暂时禁用）
+        引擎由 processing.image_export_engine 决定（auto/office/python）：
+        内置 Pillow 引擎直接渲染内存中的 Presentation；COM 引擎（Office/WPS）
+        读取快速保存的临时文件。auto 策略下 COM 失败会自动降级内置引擎。
 
         Args:
             output_dir: 输出目录
@@ -523,136 +563,175 @@ class PPTXProcessor(ITemplateProcessor):
             list: 生成的图片路径列表
         """
         try:
-            try:
-                from src.core.processors.pillow_image_exporter import PillowImageExporter
-            except ImportError:
-                from core.processors.pillow_image_exporter import PillowImageExporter
-
+            self.last_export_error = None
             engine, exporter = self._pick_image_engine()
             info = (exporter.get_office_info() if engine == 'office'
                     else exporter.get_engine_info())
             logger.info(f"图片导出引擎: {engine}（{info}）")
 
-            # 先保存当前演示文稿到临时文件
-            # 使用带缓冲的临时文件，确保数据完全写入
-            import tempfile
-            import os
-            with tempfile.NamedTemporaryFile(suffix='.pptx', delete=False) as tmp:
-                temp_path = tmp.name
-                # 保存到临时文件
-                self.presentation.save(temp_path)
-                # 确保文件已完全写入
-                tmp.flush()
-                os.fsync(tmp.fileno())
-
-            # 短暂等待，确保文件系统完成写入
-            import time
-            time.sleep(0.1)
-
-            try:
-                # 导出引擎（纯 Python / COM），COM 失败时按策略降级
-                generated_files = self._export_with_engine(
-                    exporter, temp_path, output_dir, format, quality)
-
-                # 如果指定了基础文件名，重命名生成的图片
-                if base_filename and generated_files:
-                    renamed_files = []
-                    for i, old_path in enumerate(generated_files, 1):
-                        old_name = os.path.basename(old_path)
-                        ext = os.path.splitext(old_name)[1]
-                        # 命名规则（有意为之，勿改）：单张图片不带序号，
-                        # 多张图片带 _i 序号。下游解析需兼容这两种情况。
-                        new_name = f"{base_filename}{ext}" if len(generated_files) == 1 else f"{base_filename}_{i}{ext}"
-                        new_path = os.path.join(output_dir, new_name)
-
-                        # 如果新文件名已存在，先删除
-                        if os.path.exists(new_path) and new_path != old_path:
-                            os.remove(new_path)
-
-                        # 重命名文件
-                        if old_path != new_path:
-                            os.rename(old_path, new_path)
-                            logger.info(f"重命名图片: {old_name} -> {new_name}")
-                        renamed_files.append(new_path)
-                    generated_files = renamed_files
-
-                logger.info(f"成功导出图片到: {output_dir}")
-                return generated_files
-            finally:
-                # 清理临时文件
+            if engine == 'python':
+                # 内置引擎直接渲染内存中的 Presentation：不必每行另存临时文件、
+                # 重新解压打开、重新预检（模板级上下文只准备一次，逐行复用）
+                generated_files = self._render_in_memory(
+                    exporter, output_dir, format, quality)
+            else:
+                # COM 引擎需要一个磁盘文件；用快速保存写出（已压缩媒体不重复压缩）
+                temp_path = self._save_temp_fast()
                 try:
-                    os.remove(temp_path)
-                except Exception as e:
-                    logger.debug(f"清理临时文件失败：{e}")
+                    generated_files = self._export_with_engine(
+                        exporter, temp_path, output_dir, format, quality)
+                finally:
+                    try:
+                        os.remove(temp_path)
+                    except Exception as e:
+                        logger.debug(f"清理临时文件失败：{e}")
+
+            # 如果指定了基础文件名，重命名生成的图片
+            if base_filename and generated_files:
+                renamed_files = []
+                for i, old_path in enumerate(generated_files, 1):
+                    old_name = os.path.basename(old_path)
+                    ext = os.path.splitext(old_name)[1]
+                    # 命名规则（有意为之，勿改）：单张图片不带序号，
+                    # 多张图片带 _i 序号。下游解析需兼容这两种情况。
+                    new_name = f"{base_filename}{ext}" if len(generated_files) == 1 else f"{base_filename}_{i}{ext}"
+                    new_path = os.path.join(output_dir, new_name)
+
+                    # 如果新文件名已存在，先删除
+                    if os.path.exists(new_path) and new_path != old_path:
+                        os.remove(new_path)
+
+                    # 重命名文件
+                    if old_path != new_path:
+                        os.rename(old_path, new_path)
+                        logger.info(f"重命名图片: {old_name} -> {new_name}")
+                    renamed_files.append(new_path)
+                generated_files = renamed_files
+
+            logger.info(f"成功导出图片到: {output_dir}")
+            return generated_files
 
         except RuntimeError:
             raise
         except Exception as e:
+            self.last_export_error = f"{type(e).__name__}: {e}"
             logger.error(f"导出图片时出错: {e}")
             return []
 
-    # ---------------- 图片导出引擎分层（COM 优先/纯 Python 兜底）----------------
+    def _get_python_exporter(self) -> PillowImageExporter:
+        """复用的内置渲染器：字体缓存与图片缓存跨行保留（海报背景图逐行复用）"""
+        if self._python_exporter is None:
+            self._python_exporter = PillowImageExporter()
+        return self._python_exporter
+
+    def _ensure_render_context(self):
+        """模板级渲染上下文（主题 / 内嵌字体 / 预检）只准备一次，逐行复用。"""
+        path = self.template_path
+        if self._render_theme is None or self._render_theme[0] != path:
+            self._render_theme = (path, load_theme(path))
+            font_registry.load_embedded_fonts(path)
+        if self._precheck_done != path:
+            self._precheck_done = path
+            issues = self._get_python_exporter().precheck(path)
+            for issue in issues:
+                logger.warning(f"[预检] 第{issue.slide}页 {issue.shape!r} [{issue.code}] {issue.message}")
+            if issues:
+                logger.warning(f"[预检] 共 {len(issues)} 项不支持/风险提示，输出可能与 PowerPoint 存在差异")
+
+    def _render_in_memory(self, exporter, output_dir, format, quality):
+        """直接渲染当前 Presentation（占位符已替换），不经过临时文件。"""
+        self._ensure_render_context()
+        return exporter.export_presentation(
+            self.presentation, output_dir, format, quality,
+            theme=self._render_theme[1])
+
+    def _save_temp_fast(self) -> str:
+        """把当前 Presentation 快速保存到一个临时 .pptx（供 COM 引擎读取）。"""
+        import tempfile
+        fd, temp_path = tempfile.mkstemp(suffix='.pptx')
+        os.close(fd)
+        save_pptx(self.presentation, temp_path)
+        return temp_path
+
+    # ---------------- 图片导出引擎分层（默认内置渲染 / Office 高保真可选）----------------
 
     @staticmethod
     def _image_engine_config() -> str:
-        """导出引擎策略：'auto'（COM 可用则用，否则纯 Python）| 'office' | 'python'
-        来源：环境变量 POSTERAGAIN_IMAGE_ENGINE > config processing.image_export_engine
-        > 旧键 use_com_interface(true->office)。缺省 auto。"""
+        """导出引擎策略：'python'（内置渲染，默认）| 'office'（COM 高保真）
+        | 'auto'（有 Office 用 COM，否则内置）。
+        来源：环境变量 POSTERAGAIN_IMAGE_ENGINE > 运行时配置 processing.image_export_engine
+        > 旧键 use_com_interface(true->office)。缺省 python。
+        运行时配置在开发/打包环境都能正确定位（exe 旁那份），故打包后同样可配置。"""
         import os
         env = os.environ.get('POSTERAGAIN_IMAGE_ENGINE')
         if env and env.strip().lower() in ('auto', 'office', 'python'):
             return env.strip().lower()
         try:
-            import yaml
-            for cfg_path in (os.path.join(os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.dirname(
-                        os.path.abspath(__file__))))), 'config', 'config.yaml')):
-                if os.path.exists(cfg_path):
-                    with open(cfg_path, encoding='utf-8') as f:
-                        data = yaml.safe_load(f) or {}
-                    proc = data.get('processing') or {}
-                    eng = proc.get('image_export_engine')
-                    if isinstance(eng, str) and eng.strip().lower() in ('auto', 'office', 'python'):
-                        return eng.strip().lower()
-                    if proc.get('use_com_interface') is True:
-                        return 'office'
+            try:
+                from src.config import ConfigManager
+            except ImportError:
+                from config_manager import ConfigManager
+            cm = ConfigManager()
+            eng = cm.get('processing.image_export_engine')
+            if isinstance(eng, str) and eng.strip().lower() in ('auto', 'office', 'python'):
+                return eng.strip().lower()
+            if cm.get('processing.use_com_interface') is True:
+                return 'office'
         except Exception as e:
-            logger.debug(f"读取图片导出引擎配置失败（用默认 auto）: {e}")
-        return 'auto'
+            logger.debug(f"读取图片导出引擎配置失败（用默认 python）: {e}")
+        return 'python'
+
+    def invalidate_engine_cache(self):
+        """引擎配置变更后调用，使下次导出重新解析策略。"""
+        self._engine_strategy = None
+        self._engine_cache = {}
 
     def _pick_image_engine(self):
-        """返回 (engine_name, exporter)。auto 策略下 COM 优先、纯 Python 兜底。"""
-        from src.core.processors.pillow_image_exporter import PillowImageExporter
-        strategy = self._image_engine_config()
+        """返回 (engine_name, exporter)。auto 策略下 COM 优先、纯 Python 兜底。
+
+        策略每实例解析一次（运行时配置），选择结果按策略缓存：
+        一个批次里只检测一次 Office，内置渲染器也跨行复用（字体/图片缓存得以保留）。
+        """
+        if self._engine_strategy is None:
+            self._engine_strategy = self._image_engine_config()
+        strategy = self._engine_strategy
+        cached = self._engine_cache.get(strategy)
+        if cached is not None:
+            return cached
         if strategy == 'python':
-            return 'python', PillowImageExporter()
-        if strategy == 'office':
+            result = ('python', self._get_python_exporter())
+        elif strategy == 'office':
             from src.core.processors.com_image_exporter import COMImageExporter
             com = COMImageExporter()
             if not com.is_available():
                 raise RuntimeError(
                     "导出引擎配置为 office，但未检测到 Microsoft Office/WPS——"
                     "请安装 Office 或把 processing.image_export_engine 改为 auto/python")
-            return 'office', com
-        # auto：COM 优先
-        from src.core.processors.com_image_exporter import COMImageExporter
-        com = COMImageExporter()
-        if com.is_available():
-            return 'office', com
-        logger.info("auto 策略：未检测到 Office，降级纯 Python 渲染引擎")
-        return 'python', PillowImageExporter()
+            result = ('office', com)
+        else:
+            # auto：COM 优先
+            from src.core.processors.com_image_exporter import COMImageExporter
+            com = COMImageExporter()
+            if com.is_available():
+                result = ('office', com)
+            else:
+                logger.info("auto 策略：未检测到 Office，降级纯 Python 渲染引擎")
+                result = ('python', self._get_python_exporter())
+        self._engine_cache[strategy] = result
+        return result
 
     def _export_with_engine(self, exporter, temp_path, output_dir, format, quality):
         """按所选引擎导出；auto 策略下 COM 失败自动降级纯 Python（保持总能出图）"""
         try:
             return exporter.export_to_images(temp_path, output_dir, format, quality)
         except Exception as e:
-            if self._image_engine_config() == 'office':
+            if isinstance(exporter, PillowImageExporter):
+                raise          # 已经是内置引擎，再"降级"一次只是把同一个失败重跑一遍
+            if self._engine_strategy == 'office':
                 raise
             logger.warning(f"COM 导出失败（{e}），降级纯 Python 渲染引擎重试")
-            from src.core.processors.pillow_image_exporter import PillowImageExporter
-            return PillowImageExporter().export_to_images(
-                temp_path, output_dir, format, quality)
+            return self._render_in_memory(
+                self._get_python_exporter(), output_dir, format, quality)
 
     def get_slide_count(self) -> int:
         """
