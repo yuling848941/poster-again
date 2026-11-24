@@ -21,6 +21,11 @@ import sys
 import time
 from pathlib import Path
 
+# Windows 控制台默认 GBK，打印中文会 UnicodeEncodeError；统一按 UTF-8 输出
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = REPO_ROOT / "tests" / "unit"
 

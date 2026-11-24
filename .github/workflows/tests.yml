@@ -13,6 +13,10 @@ jobs:
     # 仍按 AGENTS.md 本地构建流程执行。
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      # Windows runner 默认 GBK 控制台，测试输出含中文会 UnicodeEncodeError
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
 
