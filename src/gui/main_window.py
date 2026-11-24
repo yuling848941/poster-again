@@ -112,21 +112,6 @@ class MainWindow(QMainWindow):
         self.worker_thread.generation_completed.connect(self.on_generation_completed)
         self.worker_thread.error_occurred.connect(self.show_error)
 
-    def get_office_manager(self):
-        """
-        获取办公套件管理器（已废弃）
-
-        注意：此方法保留用于向后兼容，现在始终返回 None
-        因为项目已改用纯 Python PPTX 处理器，无需 Office/WPS
-        """
-        import warnings
-        warnings.warn(
-            "get_office_manager() 已废弃，项目现在使用纯 Python PPTX 处理器",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        return None
-
     def _load_saved_configurations(self):
         """加载保存的配置数据"""
         try:
@@ -300,39 +285,25 @@ class MainWindow(QMainWindow):
         self.direct_image_checkbox.stateChanged.connect(self.on_direct_image_checkbox_changed)
         image_layout.addWidget(self.direct_image_checkbox)
 
-        # Office 检测按钮
-        self.office_refresh_btn = QPushButton("🔄 检测 Office (Microsoft/WPS)")
-        self.office_refresh_btn.setToolTip("点击重新检测 Microsoft Office 或 WPS Office")
-        self.office_refresh_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 16px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-            QPushButton:pressed {
-                background-color: #0D47A1;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #999999;
-            }
-        """)
-        self.office_refresh_btn.setMinimumHeight(35)
-        self.office_refresh_btn.clicked.connect(self.on_office_refresh_clicked)
-        self.office_refresh_btn.hide()
-        image_layout.addWidget(self.office_refresh_btn)
-
-        # Office 状态标签
-        self.office_status_label = QLabel("")
-        self.office_status_label.setStyleSheet("color: #666; font-size: 12px;")
-        self.office_status_label.hide()
-        image_layout.addWidget(self.office_status_label)
+        # 导出引擎选择：默认内置渲染（快、无需 Office）；特殊模板可切 Office 高保真
+        engine_layout = QHBoxLayout()
+        engine_label = QLabel("导出引擎:")
+        engine_label.setStyleSheet("font-weight: bold;")
+        engine_label.setFont(Fonts.label_font())
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItems(["内置渲染（快，无需 Office）", "Office 高保真（需 Office/WPS）", "自动（有 Office 用 Office）"])
+        self._engine_values = ["python", "office", "auto"]   # 与下拉项一一对应
+        self.engine_combo.setStyleSheet(ComboBoxStyles.combo_box_style())
+        self.engine_combo.setFont(Fonts.body_font())
+        self.engine_combo.setMinimumHeight(Dimensions.HEIGHT_INPUT)
+        self.engine_combo.currentIndexChanged.connect(self.on_engine_changed)
+        engine_layout.addWidget(engine_label)
+        engine_layout.addWidget(self.engine_combo)
+        engine_layout.addStretch()
+        self.engine_widget = QWidget()
+        self.engine_widget.setLayout(engine_layout)
+        self.engine_widget.hide()
+        image_layout.addWidget(self.engine_widget)
 
         # 图片格式
         image_format_layout = QHBoxLayout()
@@ -394,15 +365,13 @@ class MainWindow(QMainWindow):
                 # 显示图片格式和质量选择下拉菜单
                 self.image_format_widget.show()
                 self.image_quality_widget.show()
-                self.office_refresh_btn.show()  # 显示刷新按钮
-                self.office_status_label.show()  # 显示状态标签
-                logger.info("直接生成图片已启用，显示刷新按钮")
+                self.engine_widget.show()
+                logger.info("直接生成图片已启用")
             else:  # 0=Qt.Unchecked 或其他值
                 # 隐藏图片格式和质量选择下拉菜单
                 self.image_format_widget.hide()
                 self.image_quality_widget.hide()
-                self.office_refresh_btn.hide()  # 隐藏刷新按钮
-                self.office_status_label.hide()  # 隐藏状态标签
+                self.engine_widget.hide()
                 logger.info("已禁用直接生成图片选项")
 
             # 使用防抖机制保存图片生成设置
@@ -435,74 +404,22 @@ class MainWindow(QMainWindow):
         # 使用防抖机制保存
         self._trigger_settings_save_debounced()
 
-    def on_office_refresh_clicked(self):
-        """处理 Office 检测刷新按钮点击"""
+    def on_engine_changed(self, index):
+        """导出引擎切换：写入运行时配置，并使生成器的引擎缓存失效（下一批生效）"""
         try:
-            logger.info("用户点击刷新 Office 检测")
-            # 调用检测逻辑
-            result = self.check_office_availability(show_result=False)
-
-            # 更新状态标签
-            self._update_office_status_label()
-
-            if result:
-                QMessageBox.information(
-                    self,
-                    "Office 检测成功",
-                    f"Office 检测成功！\n\n现在可以批量生成图片了。"
-                )
-            else:
-                QMessageBox.warning(
-                    self,
-                    "Office 检测失败",
-                    "未检测到 Microsoft Office 或 WPS Office。\n\n请确保已安装 Office 套件后重试。"
-                )
+            if index < 0 or index >= len(self._engine_values):
+                return
+            value = self._engine_values[index]
+            self.config_manager.set('processing.image_export_engine', value)
+            self.config_manager.save_config()
+            logger.info(f"导出引擎已切换为: {value}")
+            # 使已存在的生成器引擎缓存失效（不触发懒初始化），下一批按新配置解析
+            gen = getattr(self.worker_thread, '_ppt_generator', None)
+            proc = getattr(gen, 'template_processor', None) if gen else None
+            if proc is not None:
+                proc.invalidate_engine_cache()
         except Exception as e:
-            logger.error(f"Office 检测失败：{str(e)}")
-            QMessageBox.critical(
-                self,
-                "Office 检测错误",
-                f"Office 检测过程中发生错误：\n{str(e)}"
-            )
-
-    def _update_office_status_label(self):
-        """更新 Office 状态标签"""
-        try:
-            from src.config import ConfigManager
-            config_manager = ConfigManager()
-            cache_status = config_manager.get_office_cache_status()
-
-            if cache_status.get('cached') and cache_status.get('name'):
-                status_text = f"✓ 已检测到：{cache_status['name']} {cache_status.get('version', '')}"
-                self.office_status_label.setText(status_text)
-                self.office_status_label.setStyleSheet("color: #2e7d32; font-size: 12px; font-weight: bold;")
-            else:
-                self.office_status_label.setText("⚠ 未检测到 Office，请点击检测")
-                self.office_status_label.setStyleSheet("color: #f57c00; font-size: 12px;")
-        except Exception as e:
-            logger.error(f"更新 Office 状态失败：{str(e)}")
-
-    def check_office_availability(self, show_result: bool = False) -> bool:
-        """
-        检查图片导出可用性
-
-        纯 Python 分支：图片导出使用内置 Pillow 渲染引擎，
-        不再依赖 Microsoft Office / WPS Office，COM 检测已禁用，始终返回可用。
-
-        Args:
-            show_result: 是否显示提示对话框
-
-        Returns:
-            bool: 始终 True
-        """
-        if show_result:
-            QMessageBox.information(
-                self,
-                "图片导出引擎",
-                "当前版本使用内置纯 Python 渲染引擎导出图片，\n"
-                "无需安装 Microsoft Office 或 WPS Office。"
-            )
-        return True
+            logger.error(f"切换导出引擎失败: {e}")
 
     def load_message_template(self):
         """加载保存的贺语模板 (委托给 SettingsManager)"""
@@ -609,7 +526,23 @@ class MainWindow(QMainWindow):
         self.batch_generate_btn.clicked.connect(self.batch_generate)
         layout.addWidget(self.batch_generate_btn)
 
+        # 取消生成按钮（仅批量进行中可用）
+        self.cancel_btn = QPushButton("取消生成")
+        self.cancel_btn.setStyleSheet(ButtonStyles.secondary_style())
+        self.cancel_btn.setMinimumWidth(Dimensions.MIN_BUTTON_WIDTH)
+        self.cancel_btn.setToolTip("停止批量生成（已完成当前行后停止，已生成的文件保留）")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self.cancel_generation)
+        layout.addWidget(self.cancel_btn)
+
         return panel
+
+    def cancel_generation(self):
+        """请求取消正在进行的批量生成"""
+        if hasattr(self, 'worker_thread') and self.worker_thread.isRunning():
+            self.worker_thread.request_cancel()
+            self.cancel_btn.setEnabled(False)
+            self.progress_label.setText("正在取消...")
 
 
 
@@ -737,24 +670,30 @@ class MainWindow(QMainWindow):
 
                 # 检查是否是自定义文本（新的格式：[原始列名] 前缀:xxx 后缀:xxx）
                 if data_column.startswith("[") and "]" in data_column:
-                    # 提取方括号中的原始列名和自定义文本信息
-                    bracket_end = data_column.find("]")
-                    original_column = data_column[1:bracket_end]  # 提取方括号中的内容
-                    custom_text = data_column[bracket_end + 2:]  # 移除"[列名] "前缀
+                    # 优先读结构化数据（UserRole），避免解析显示文本出错
+                    structured = data_column_item.data(Qt.UserRole)
+                    if isinstance(structured, dict) and "column" in structured:
+                        original_column = structured.get("column", "")
+                        prefix = structured.get("prefix", "")
+                        suffix = structured.get("suffix", "")
+                    else:
+                        # 回退：解析显示文本。提取方括号中的原始列名
+                        bracket_end = data_column.find("]")
+                        original_column = data_column[1:bracket_end]
+                        custom_text = data_column[bracket_end + 2:]  # 移除"[列名] "前缀
 
-                    # 解析前缀和后缀
-                    prefix = ""
-                    suffix = ""
-
-                    if "前缀:" in custom_text:
-                        prefix_start = custom_text.find("前缀:") + 3
-                        prefix_end = custom_text.find(" ", prefix_start) if " " in custom_text[prefix_start:] else len(custom_text)
-                        prefix = custom_text[prefix_start:prefix_end]
-
-                    if "后缀:" in custom_text:
-                        suffix_start = custom_text.find("后缀:") + 3
-                        suffix_end = custom_text.find(" ", suffix_start) if " " in custom_text[suffix_start:] else len(custom_text)
-                        suffix = custom_text[suffix_start:suffix_end]
+                        # 按「前缀:」「后缀:」标记本身切分（而不是按空格），
+                        # 这样含空格的前缀/后缀（如 "Dear Mr."）不会被截断
+                        prefix = ""
+                        suffix = ""
+                        p_idx = custom_text.find("前缀:")
+                        s_idx = custom_text.find("后缀:")
+                        if p_idx != -1:
+                            start = p_idx + 3
+                            end = s_idx if s_idx > p_idx else len(custom_text)
+                            prefix = custom_text[start:end].strip()
+                        if s_idx != -1:
+                            suffix = custom_text[s_idx + 3:].strip()
 
                     # 设置匹配规则为原始列名
                     if original_column and original_column != "自定义":
@@ -776,28 +715,47 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "请先选择模板文件、数据源文件和输出目录")
             return
 
+        # 先做校验，再创建输出文件夹（避免校验不通过时留下空的「贺报+时间戳」文件夹）
+        if not self.auto_match_executed:
+            QMessageBox.warning(self, "警告", "请先执行自动匹配")
+            return
+
+        if self.match_table.rowCount() == 0:
+            QMessageBox.warning(self, "警告", "请先执行自动匹配")
+            return
+
+        # 收集匹配规则和文本增加规则
+        matching_rules, text_addition_rules = self._collect_matching_rules_from_table()
+
+        # 未绑定数据列的占位符会保留模板原文，先明确告知用户
+        unbound = []
+        for row in range(self.match_table.rowCount()):
+            ph_item = self.match_table.item(row, 0)
+            col_item = self.match_table.item(row, 1)
+            ph = ph_item.text() if ph_item else ""
+            col = col_item.text() if col_item else ""
+            if ph and not col.strip():
+                unbound.append(ph)
+        if unbound:
+            shown = "、".join(unbound[:8]) + ("…" if len(unbound) > 8 else "")
+            reply = QMessageBox.question(
+                self, "存在未绑定的占位符",
+                f"以下 {len(unbound)} 个占位符未绑定数据列，将保留模板中的原文：\n\n"
+                f"{shown}\n\n是否仍要继续生成？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                return
+
         # 创建带时间戳的子文件夹
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         folder_name = f"贺报{timestamp}"
         output_path = os.path.join(base_output_path, folder_name)
-
-        # 创建文件夹
         try:
             os.makedirs(output_path, exist_ok=True)
             logger.info(f"创建输出文件夹: {folder_name}")
         except Exception as e:
             QMessageBox.warning(self, "警告", f"创建输出文件夹失败: {str(e)}")
-            return
-
-        # 检查是否已执行自动匹配
-        if not self.auto_match_executed:
-            QMessageBox.warning(self, "警告", "请先执行自动匹配")
-            return
-
-        # 检查是否有匹配结果
-        if self.match_table.rowCount() == 0:
-            QMessageBox.warning(self, "警告", "请先执行自动匹配")
             return
 
         # 检查是否生成图片
@@ -807,30 +765,13 @@ class MainWindow(QMainWindow):
 
         if generate_images:
             image_format = self.image_format_combo.currentText()
-            # UI 文本转 float 缩放倍数，贯穿到 COM 导出
+            # UI 文本转 float 缩放倍数，贯穿到导出引擎
             image_quality = self.settings_manager.quality_text_to_value(
                 self.image_quality_combo.currentText()
             )
             logger.info(f"将生成{image_format}格式的图片文件，缩放倍数：{image_quality}")
-
-            # 预检 Office 可用性
-            if not self.check_office_availability(show_result=False):
-                QMessageBox.warning(
-                    self,
-                    "Office 不可用",
-                    "未检测到 Microsoft Office 或 WPS Office，无法生成图片。\n\n"
-                    "可能原因：\n"
-                    "1. 未安装 Office 套件\n"
-                    "2. Office 安装在非标准路径\n"
-                    "3. COM 接口异常\n\n"
-                    "请检查 Office 安装后重试，或点击'🔄 检测 Office'按钮手动检测。"
-                )
-                return
         else:
             logger.info("将生成PPT文件")
-
-        # 收集匹配规则和文本增加规则
-        matching_rules, text_addition_rules = self._collect_matching_rules_from_table()
 
         # 新的全量任务：清除失败行重试状态
         self.worker_thread.set_retry_rows(None)
@@ -859,6 +800,7 @@ class MainWindow(QMainWindow):
         # 更新输出路径为新建的子文件夹
         self.worker_thread.set_output_path(output_path)
         self.worker_thread.start_batch_generate()
+        self.cancel_btn.setEnabled(True)
         
     def update_progress(self, value, message):
         """更新进度条和状态文本"""
@@ -953,7 +895,11 @@ class MainWindow(QMainWindow):
 
                 # 显示格式为: [原始列名] 前缀:xxx 后缀:xxx
                 column_display = original_column if original_column else "自定义"
-                self.match_table.setItem(row, 1, QTableWidgetItem(f"[{column_display}] {display_text}"))
+                item = QTableWidgetItem(f"[{column_display}] {display_text}")
+                # 同时存结构化数据，收集规则时优先用它（显示文本含空格也不会解析错）
+                item.setData(Qt.UserRole, {
+                    "column": original_column, "prefix": prefix, "suffix": suffix})
+                self.match_table.setItem(row, 1, item)
                 # 重要：保存文本增加规则到主窗口的状态中
                 if not hasattr(self, 'text_addition_rules'):
                     self.text_addition_rules = {}
@@ -1271,6 +1217,7 @@ class MainWindow(QMainWindow):
 
         success = summary.get("success", 0)
         failed = summary.get("failed", [])
+        degraded = summary.get("degraded", [])
         total = summary.get("total", success + len(failed))
         is_retry = summary.get("is_retry", False)
         precheck = summary.get("precheck", [])
@@ -1293,6 +1240,15 @@ class MainWindow(QMainWindow):
             title = "完成"
             prefix = "失败行重试完成，" if is_retry else ""
             text = f"{prefix}{file_type}批量生成完成！成功生成 {success} 个文件"
+
+        # 降级提示：这些行图片导出失败，已改为输出 PPT（仍计入成功数）
+        if degraded and generate_images:
+            lines = [f"", f"⚠ 其中 {len(degraded)} 行图片导出失败，已降级输出为 PPT："]
+            for f in degraded[:5]:
+                lines.append(f"  第 {f['row_number']} 行（{f['name']}）: {f['error'][:80]}")
+            if len(degraded) > 5:
+                lines.append(f"  ……等共 {len(degraded)} 行")
+            text += "\n".join(lines)
 
         # 预检提示：近似渲染效果知情告知（按问题码归并展示）
         if precheck:
@@ -1335,6 +1291,7 @@ class MainWindow(QMainWindow):
         # 重新启用按钮
         self.auto_match_btn.setEnabled(True)
         self.batch_generate_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
 
         # 资源清理完成后才启动重试，避免与工作线程竞争模板处理器
         if retry_requested:
@@ -1383,6 +1340,7 @@ class MainWindow(QMainWindow):
 
         logger.info(f"开始重试失败行：{len(self._last_failed_rows)} 行，输出目录: {self._last_batch_output_path}")
         self.worker_thread.start_batch_generate()
+        self.cancel_btn.setEnabled(True)
         
     def show_error(self, message):
         """显示错误消息"""
@@ -1402,6 +1360,7 @@ class MainWindow(QMainWindow):
         # 重新启用按钮
         self.auto_match_btn.setEnabled(True)
         self.batch_generate_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
 
     def load_last_paths(self):
         """加载上次使用的路径 (委托给 PathManager)"""
@@ -1472,8 +1431,13 @@ class MainWindow(QMainWindow):
             quality_text = self.settings_manager.quality_value_to_text(settings['quality'])
             self.image_quality_combo.setCurrentText(quality_text)
 
-        # 更新 Office 状态标签
-        self._update_office_status_label()
+        # 导出引擎下拉框同步到运行时配置（阻塞信号，避免加载时误触发保存）
+        if hasattr(self, 'engine_combo') and self.engine_combo is not None:
+            eng = str(self.config_manager.get('processing.image_export_engine', 'python') or 'python').lower()
+            if eng in self._engine_values:
+                self.engine_combo.blockSignals(True)
+                self.engine_combo.setCurrentIndex(self._engine_values.index(eng))
+                self.engine_combo.blockSignals(False)
 
     def save_image_generation_settings(self):
         """保存图片生成设置 (委托给 SettingsManager)"""
@@ -1612,19 +1576,21 @@ class MainWindow(QMainWindow):
             logger.error(f"添加匹配行失败: {str(e)}")
 
     def closeEvent(self, event):
-        """窗口关闭事件处理"""
+        """窗口关闭事件处理：先请求取消并等待工作线程停下，再释放资源。"""
         try:
-            # 确保PPT生成器资源被释放
+            # 批量进行中：请求协作式取消，等待线程在 current 行结束后停下。
+            # quit() 对重写了 run() 的 QThread 无效，必须用取消标志 + wait。
+            if hasattr(self, 'worker_thread') and self.worker_thread.isRunning():
+                self.worker_thread.request_cancel()
+                if not self.worker_thread.wait(8000):
+                    logger.warning("窗口关闭：工作线程未在 8 秒内停止，进程退出将终止它")
+
+            # 线程停下后再释放生成器资源，避免与正在进行的渲染竞争
             if hasattr(self.worker_thread, 'get_ppt_generator'):
                 ppt_generator = self.worker_thread.get_ppt_generator()
                 if ppt_generator:
                     ppt_generator.close()
                     logger.info("窗口关闭：已释放PPTX处理器资源")
-
-            # 等待工作线程完成
-            if hasattr(self, 'worker_thread') and self.worker_thread.isRunning():
-                self.worker_thread.quit()
-                self.worker_thread.wait(3000)  # 最多等待3秒
 
         except Exception as e:
             logger.error(f"窗口关闭时资源释放失败: {str(e)}")

@@ -4,10 +4,8 @@ import logging
 from PySide6.QtCore import QThread, Signal
 try:
     from src.ppt_generator import PPTGenerator
-    from src.config import ConfigManager
 except ImportError:
     from ppt_generator import PPTGenerator
-    from config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +27,6 @@ class PPTWorkerThread(QThread):
         self.output_path = ""
         self.matching_rules = {}
         self.text_addition_rules = {}  # 新增：文本增加规则
-        self.config_manager = ConfigManager()
         # office_manager 参数已废弃，保留用于向后兼容
         self.office_manager = None
         self.main_window = main_window  # 保存MainWindow引用以获取用户输入数据
@@ -41,6 +38,12 @@ class PPTWorkerThread(QThread):
         self.message_template = ""  # 新增：贺语模板
         self.retry_row_indices = None  # 失败行重试：只跑指定 DataFrame 行标签；None = 全部
         self._was_retry = False  # 本次 batch_generate 是否为重试任务
+        self._cancel_requested = False  # 协作式取消标志（批量循环每行检查）
+
+    def request_cancel(self):
+        """请求取消当前批量任务（在下一行开始前生效，最多再跑完当前一行）"""
+        self._cancel_requested = True
+        self.log_message.emit("已请求取消，将在当前行完成后停止...")
 
     def set_retry_rows(self, row_indices):
         """设置失败行重试（只重新生成指定行；None 恢复全量）"""
@@ -166,6 +169,7 @@ class PPTWorkerThread(QThread):
         """批量生成PPT或图片"""
         # 记录本次是否为失败行重试任务（emit 摘要时已清空重试状态）
         self._was_retry = self.retry_row_indices is not None
+        self._cancel_requested = False
         try:
             # 获取PPT生成器（延迟初始化）
             ppt_generator = self.get_ppt_generator()
@@ -289,7 +293,8 @@ class PPTWorkerThread(QThread):
                 generate_images=self.generate_images,
                 image_format=self.image_format,
                 image_quality=self.image_quality,
-                row_indices=self.retry_row_indices
+                row_indices=self.retry_row_indices,
+                cancel_check=lambda: self._cancel_requested
             )
 
             # 重试任务完成后恢复全量语义（worker 是复用实例）
@@ -305,8 +310,15 @@ class PPTWorkerThread(QThread):
                     "stage": f.stage,
                     "error": f.error,
                 } for f in result.failed_rows],
+                "degraded": [{
+                    "index": f.index,
+                    "row_number": f.row_number,
+                    "name": f.name,
+                    "error": f.error,
+                } for f in getattr(result, 'degraded_rows', [])],
                 "total": int(result.total),
                 "is_retry": self._was_retry,
+                "cancelled": bool(getattr(result, 'cancelled', False)),
                 "precheck": [{
                     "slide": issue.slide,
                     "shape": issue.shape,
@@ -315,7 +327,10 @@ class PPTWorkerThread(QThread):
                 } for issue in result.precheck_issues],
             }
             self.generation_completed.emit(summary)
-            if summary["failed"]:
+            if summary.get("cancelled"):
+                self.log_message.emit(
+                    f"批量生成已取消：已完成 {summary['success']}/{summary['total']}")
+            elif summary["failed"]:
                 self.log_message.emit(
                     f"批量生成结束：成功 {summary['success']}/{summary['total']}，"
                     f"失败 {len(summary['failed'])} 行")

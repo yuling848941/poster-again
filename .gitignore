@@ -112,3 +112,12 @@ experiments/reference2/
 
 # 例外：文档配图截图（docx 生成素材）
 !docs/shots/*.png
+
+# ====================
+# 会话 / 调试临时产物（可重新生成）
+# ====================
+.video_agent/
+/out/
+/pc_row0/
+/tmp_real_check/
+wheels/

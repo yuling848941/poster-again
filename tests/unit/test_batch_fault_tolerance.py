@@ -131,13 +131,20 @@ def main():
         out3 = os.path.join(tmpdir, "out_img")
         gen3 = make_generator(template, data)
         orig_save = gen3.template_processor.save_presentation
+        orig_export = gen3.template_processor.export_to_images
 
         def poison_save(path):
-            # 毒行的临时 PPT 保存与降级 PPT 保存都失败
+            # 毒行的降级 PPT 保存失败
             # （注意不能用 RuntimeError——那是"Office 缺失"的整批中止信号）
             if getattr(poison_save, "last_replace", None) == "坏数据":
                 raise ValueError("模拟保存失败")
             return orig_save(path)
+
+        def poison_export(*args, **kwargs):
+            # 毒行的图片导出失败（抛异常 -> 触发降级 PPT 分支）
+            if getattr(poison_save, "last_replace", None) == "坏数据":
+                raise ValueError("模拟导出失败")
+            return orig_export(*args, **kwargs)
 
         orig_replace3 = gen3.template_processor.replace_placeholders
 
@@ -147,12 +154,39 @@ def main():
 
         gen3.template_processor.replace_placeholders = tracking_replace
         gen3.template_processor.save_presentation = poison_save
+        gen3.template_processor.export_to_images = poison_export
         result3 = gen3.batch_generate(out3, generate_images=True)
 
         check("图片模式成功 3 行", result3.success_count == 3)
         check("图片模式失败 1 行", len(result3.failed_rows) == 1)
         if result3.failed_rows:
             check("失败阶段为 fallback", result3.failed_rows[0].stage == "fallback")
+
+        print("(3b) 图片模式：导出失败但降级 PPT 成功（记为 degraded，仍计成功）")
+        out3b = os.path.join(tmpdir, "out_img_degraded")
+        gen3b = make_generator(template, data)
+        orig_export_b = gen3b.template_processor.export_to_images
+        orig_replace_b = gen3b.template_processor.replace_placeholders
+        state = {"last": None}
+
+        def tracking_replace_b(data_map):
+            state["last"] = data_map.get("ph_姓名")
+            return orig_replace_b(data_map)
+
+        def poison_export_b(*args, **kwargs):
+            if state["last"] == "坏数据":
+                raise ValueError("模拟导出失败")
+            return orig_export_b(*args, **kwargs)
+
+        gen3b.template_processor.replace_placeholders = tracking_replace_b
+        gen3b.template_processor.export_to_images = poison_export_b
+        result3b = gen3b.batch_generate(out3b, generate_images=True)
+        check("降级行仍计成功（4 行）", result3b.success_count == 4)
+        check("无失败行", len(result3b.failed_rows) == 0)
+        check("降级行单独记录 1 行", len(result3b.degraded_rows) == 1)
+        if result3b.degraded_rows:
+            check("降级行阶段为 degraded", result3b.degraded_rows[0].stage == "degraded")
+        check("降级产物为 PPT", os.path.exists(os.path.join(out3b, "3_坏数据.pptx")))
 
         print("(4) 模板预检：缺失字体进入 precheck_issues")
         tpl_missing_font = os.path.join(tmpdir, "tpl_font.pptx")
@@ -171,6 +205,20 @@ def main():
         print("(5) row_indices 指向不存在的行为空任务")
         result5 = gen4.batch_generate(out4, generate_images=False, row_indices=[999])
         check("不存在行 total=0", result5.total == 0 and result5.success_count == 0)
+
+        print("(6) 协作式取消：cancel_check 在第 2 行后返回 True")
+        out6 = os.path.join(tmpdir, "out_cancel")
+        gen6 = make_generator(template, data)
+        calls = {"n": 0}
+
+        def cancel_after_two():
+            calls["n"] += 1
+            return calls["n"] > 2
+
+        result6 = gen6.batch_generate(out6, generate_images=False, cancel_check=cancel_after_two)
+        check("取消标志置位", result6.cancelled is True)
+        check("取消时已完成 2 行", result6.success_count == 2)
+        check("取消不产生失败行", len(result6.failed_rows) == 0)
 
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

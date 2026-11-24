@@ -90,6 +90,7 @@ class ConfigManager(PathConfigMixin, ImageConfigMixin, PlaceholderConfigMixin,
             },
             "processing": {
                 "use_com_interface": False,
+                "image_export_engine": "python",
                 "auto_save": True,
                 "backup_files": True,
                 "max_undo_steps": 10
