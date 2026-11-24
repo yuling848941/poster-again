@@ -10,7 +10,7 @@ Pillow 纯 Python PPTX 渲染 PoC
 不支持：旋转、组合、表格、图表、艺术字变形、图片裁剪、描边、glow
 
 用法：
-    .venv/Scripts/python.exe experiments/pillow_render_poc.py --pptx "10月递交贺报(3).pptx" --quality 2
+    .venv/Scripts/python.exe experiments/pillow_render_poc.py --pptx "samples/templates/10月递交贺报(3).pptx" --quality 2
 """
 import argparse
 import io

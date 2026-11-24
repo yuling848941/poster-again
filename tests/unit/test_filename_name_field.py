@@ -81,11 +81,11 @@ def main():
 
     # 测试真实数据文件
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    r = test_excel_file(os.path.join(root, 'KA递交模板.xlsx'))
+    r = test_excel_file(os.path.join(root, 'samples/data/KA递交模板.xlsx'))
     if r is not None:
         results.append(r)
 
-    r = test_excel_file(os.path.join(root, 'KA承保快报+-+2025-10-23T164946.667.xlsx'))
+    r = test_excel_file(os.path.join(root, 'samples/data/KA承保快报+-+2025-10-23T164946.667.xlsx'))
     if r is not None:
         results.append(r)
 

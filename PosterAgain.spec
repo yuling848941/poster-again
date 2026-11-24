@@ -15,6 +15,8 @@ PosterAgain PyInstaller spec
    删除直接崩溃（已实测）；字体不子集化（缺字形风险，违背"效果不变"）
 """
 
+import os
+
 # 不需要的 PySide6 模块（QtCore/QtGui/QtWidgets 是必需的，其余排除）
 EXCLUDED_QT_MODULES = [
     'PySide6.Qt3DCore', 'PySide6.Qt3DRender', 'PySide6.Qt3DInput',
@@ -92,11 +94,22 @@ def _should_exclude_binary(path):
     return False
 
 
+# 仓库内自带的两个库（libs/render_core、libs/fontfx，见 AGENTS.md）。
+# 这里显式给出源码路径：即使 .venv 里没做可编辑安装，也能直接从源码打包。
+LIB_SRC = [
+    os.path.join(SPECPATH, 'libs', 'render_core', 'src'),
+    os.path.join(SPECPATH, 'libs', 'fontfx', 'src'),
+]
+# 渲染库的捆绑字体（思源黑体/宋体，SIL OFL）随库走：打进包内 render_core/resources/fonts，
+# font_registry.bundled_font_dir() 会按「包内 resources/fonts」找到它
+LIB_FONTS = (os.path.join(SPECPATH, 'libs', 'render_core', 'src', 'render_core', 'resources'),
+             os.path.join('render_core', 'resources'))
+
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=LIB_SRC,
     binaries=[],
-    datas=[('resources', 'resources')],
+    datas=[('resources', 'resources'), LIB_FONTS],
     hiddenimports=[
         'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
         'pandas', 'openpyxl', 'pptx', 'numpy', 'yaml', 'psutil',

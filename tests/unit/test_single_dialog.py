@@ -143,7 +143,7 @@ def test_single_dialog():
     print("=" * 70)
 
     tmp_dir, excel_file = _create_test_excel()
-    config_file = os.path.join(PROJECT_ROOT, "承保.pptcfg")
+    config_file = os.path.join(PROJECT_ROOT, "samples/presets/承保.pptcfg")
 
     try:
         if not os.path.exists(config_file):

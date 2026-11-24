@@ -71,8 +71,8 @@ def main():
 
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     files = [
-        (os.path.join(project_root, "10月承保贺报(3).pptx"), "承保贺报"),
-        (os.path.join(project_root, "10月递交贺报(3).pptx"), "递交贺报"),
+        (os.path.join(project_root, "samples/templates/10月承保贺报(3).pptx"), "承保贺报"),
+        (os.path.join(project_root, "samples/templates/10月递交贺报(3).pptx"), "递交贺报"),
     ]
 
     results = {}

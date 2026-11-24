@@ -23,7 +23,7 @@ def simulate_user_workflow():
         # 加载Excel数据
         from src.data_reader import DataReader
         data_reader = DataReader()
-        data_reader.load_excel("KA递交模板.xlsx")
+        data_reader.load_excel("samples/data/KA递交模板.xlsx")
         data = data_reader.get_data_preview(num_rows=5)  # 获取前5行数据用于测试
 
         print(f"数据列: {list(data.columns)}")
@@ -37,7 +37,7 @@ def simulate_user_workflow():
         from src.exact_matcher import ExactMatcher
 
         template_processor = TemplateProcessor()
-        template_processor.load_template("10月递交贺报(3).pptx")
+        template_processor.load_template("samples/templates/10月递交贺报(3).pptx")
 
         exact_matcher = ExactMatcher()
         exact_matcher.set_data(data)

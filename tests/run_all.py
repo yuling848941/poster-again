@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-全量单元测试一键回归：子进程逐个跑 tests/unit/*.py，汇总结果表。
+全量单元测试一键回归：子进程逐个跑 tests/unit/*.py，汇总结果表；
+然后接着跑仓库里两个库各自的测试（libs/fontfx、libs/render_core）。
 
 用法：
     python tests/run_all.py                 # 默认（跳过 SKIP_LIST 中的用例）
     python tests/run_all.py --all           # 包含跳过清单
-    python tests/run_all.py --filter mru    # 只跑文件名含 mru 的
+    python tests/run_all.py --filter mru    # 只跑文件名含 mru 的（仅应用用例）
     python tests/run_all.py --list          # 只列出将跑的用例
     python tests/run_all.py --timeout 420   # 单文件超时秒数（默认 300）
+    python tests/run_all.py --app-only      # 不跑库测试
 
-退出码：有 FAIL/TIMEOUT 则 1，否则 0（SKIP 不影响）。
+退出码：有 FAIL/TIMEOUT（或任一库测试失败）则 1，否则 0（SKIP 不影响）。
 """
 
 import argparse
@@ -21,6 +23,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = REPO_ROOT / "tests" / "unit"
+
+# 仓库内两个库的测试入口（各自独立，也可以单独运行）
+LIB_RUNNERS = [
+    REPO_ROOT / "libs" / "fontfx" / "tests" / "run_tests.py",
+    REPO_ROOT / "libs" / "render_core" / "tests" / "run_tests.py",
+]
 
 # 默认跳过的用例（--all 可包含）：
 # - 需要本机真实 PowerPoint COM / 特定业务文件的用例，CI 与无 Office 环境跑不了
@@ -45,6 +53,8 @@ def main() -> int:
     parser.add_argument("--filter", default="", help="只跑文件名含该子串的用例")
     parser.add_argument("--list", action="store_true", help="只列出用例")
     parser.add_argument("--timeout", type=int, default=300, help="单文件超时秒数")
+    parser.add_argument("--app-only", action="store_true",
+                        help="只跑应用用例，不跑 libs/ 下两个库的测试")
     args = parser.parse_args()
 
     files = discover(args.filter, args.all)
@@ -94,6 +104,23 @@ def main() -> int:
           f"跳过 {len(SKIP_LIST if not args.all else set())} 个）")
     if failed or timeouts:
         print("失败用例：" + ", ".join(r[0] for r in failed + timeouts))
+    app_ok = not (failed or timeouts)
+
+    # 两个库各自的测试（输出直接透传，它们自己会打印逐条结果）
+    libs_failed = []
+    if not args.app_only:
+        for runner in LIB_RUNNERS:
+            if not runner.exists():
+                continue
+            print(f"\n【库测试】{runner.relative_to(REPO_ROOT)}")
+            proc = subprocess.run([sys.executable, str(runner)], cwd=str(REPO_ROOT))
+            if proc.returncode != 0:
+                libs_failed.append(runner.parent.parent.name)
+        print("\n" + "=" * 64)
+        print("库测试：" + ("全部通过 ✅" if not libs_failed else "失败 ❌ " + ", ".join(libs_failed)))
+
+    print("=" * 64)
+    if not app_ok or libs_failed:
         return 1
     return 0
 

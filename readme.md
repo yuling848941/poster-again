@@ -14,15 +14,19 @@
 | 保存/分享 | 输出目录 | 相册（MediaStore）/ 系统分享（微信等） |
 | 依赖 | 无 Office 也可用（COM 为可选增强） | 无任何外部依赖 |
 
-## 渲染引擎（src/render_core/）
+## 渲染库（libs/，两层，均可 pip 安装）
 
-自包含、跨平台的 PPTX→图片渲染核心，对照 PowerPoint COM 真值逐项校准：
+- **`libs/fontfx`（fontfx）**：纯 Pillow 文字特效库——线性渐变 / 图片填充 / 发光 / 外阴影 / 描边 / 删除线 / 下划线 / 合成斜体。不依赖 PPTX，任何 Pillow 项目都能单独用。
+- **`libs/render_core`（render_core，发行名 pptx-render-core）**：PPTX→图片渲染引擎，负责格式继承、排版、预检、形状几何、字体注册、批量个性化；「字长什么样」交给 fontfx。
+
+两者对照 PowerPoint COM 真值逐项校准：
 
 - **文字效果**：glow 发光（五色探针统一校准，强度比 ±4%）、外阴影、纯色/渐变/图片填充、描边、斜体、删除线、单/双下划线
 - **颜色系统**：srgbClr/schemeClr/sysClr/prstClr + lumMod/lumOff/satMod、渐变同位置 stop 覆盖（PowerPoint 语义）
 - **排版**：typographic 行距模型（相邻行推进 = descent+ascent）、基线仿射模型（思源/雅黑分别校准）、normAutofit 缩字
 - **形状**：18 种预设几何、旋转/翻转、组合递归、纯色/线性渐变/图片填充、形状阴影
-- **字体**：捆绑思源黑体/宋体（SIL OFL）+ 系统字体 + PPTX 内嵌字体（含 ODTTF 解混淆）+ 本机扩展字体目录静默扫描
+- **字体**：捆绑思源黑体/宋体（SIL OFL，在 `render_core/resources/fonts/`）+ 系统字体 + PPTX 内嵌字体（含 ODTTF 解混淆）+ 本机扩展字体目录静默扫描
+- **批量提速**：模板只解析一次、逐行「替换→渲染→恢复」；背景图缩放后跨行缓存；已压缩媒体保存时不再重复 deflate（50MB 模板约 6.1s/行 → 1.1s/行，输出逐像素不变）
 - **内存受限路径**：JPEG draft 降采样、先缩放后补 alpha（安卓 50MB 模板可用）
 - **溢出语义**：文本溢出文本框时渐变端点色延伸（与 PowerPoint 一致）
 - **渲染预检**：白名单制，不支持的效果明确提示（倒影/3D/艺术字变形等）
@@ -38,9 +42,11 @@ python -m venv .venv
 .venv\Scripts\python.exe -m PyInstaller PosterAgain.spec --noconfirm   # 打包 exe
 ```
 
-图片导出引擎可选：`config/config.yaml` → `processing.image_export_engine`
-- `auto`（默认）：检测到 Office 用 COM（100% 保真），否则纯 Python
-- `office` / `python`：强制其一；COM 失败自动降级保持出图
+图片导出引擎：界面「直接生成图片」里有下拉框可直接切换，也对应运行时配置 `processing.image_export_engine`
+- `python`（默认）：内置渲染，快、无需 Office；贺报模板已对照 PowerPoint 校准，效果基本一致
+- `office`：Office/WPS COM 高保真（100% 保真，但每行有自动化开销，较慢）
+- `auto`：检测到 Office 用 COM，否则内置
+- 环境变量 `POSTERAGAIN_IMAGE_ENGINE` 可临时覆盖；office/auto 下 COM 失败自动降级内置保持出图
 
 ## 快速开始（Android）
 
@@ -70,27 +76,26 @@ PPT 模板三种写法（优先级从高到低）：
 
 ```
 poster-again/
-├── main.py                    # 桌面端入口
+├── main.py                    # 桌面端入口（文件日志 + 全局异常钩子）
+├── libs/
+│   ├── fontfx/                # ★ 纯 Pillow 文字特效库（渐变/发光/阴影/描边/图片填充）
+│   └── render_core/           # ★ PPTX→图片渲染库（依赖 fontfx；含捆绑字体 resources/fonts/）
 ├── src/
-│   ├── render_core/           # ★ 跨平台渲染核心（自包含，可独立嵌入）
-│   │   ├── pillow_image_exporter.py   # 渲染引擎（效果/排版/内存路径）
-│   │   ├── personalize.py     # Personalizer 批量个性化管线
-│   │   ├── data_rows.py       # 无 pandas 数据读取
-│   │   ├── font_registry.py   # 字体解析（捆绑/系统/嵌入/扩展目录）
-│   │   ├── format_inheritance.py      # OOXML 格式继承解析
-│   │   ├── shape_geometry.py  # 预设形状几何
-│   │   └── render_precheck.py # 渲染预检
-│   ├── gui/                   # PySide6 界面
-│   ├── ppt_generator.py       # 批量生成编排
-│   └── core/                  # 处理器（COM 分层导出等）
+│   ├── gui/                   # PySide6 界面（含取消生成）
+│   ├── ppt_generator.py       # 批量生成编排（恢复式复用 + 容错 + 降级）
+│   ├── core/                  # 处理器（快速保存、COM 分层导出等）
+│   ├── data_reader.py         # pandas 数据读取
+│   └── exact_matcher.py       # 占位符匹配
 ├── android/                   # ★ Android 工程
 │   ├── app/src/main/java/     # Kotlin/Compose UI（screens + AppState）
-│   ├── app/src/main/python/   # poster_bridge 桥接 + render_core 副本
+│   ├── app/src/main/python/   # poster_bridge 桥接 + render_core/fontfx 副本
 │   └── e2e_batch.py           # 模拟器自动化测试
-├── resources/fonts/           # 捆绑思源字体（SIL OFL）
-├── tests/unit/                # 40+ 独立测试脚本（python 直接运行）
+├── samples/                   # 业务样例（gitignored）：templates/ data/ presets/
+├── resources/                 # 图标等（字体已随 render_core 库）
+├── tests/                     # 应用独立测试脚本 + run_all.py 全量回归
+├── tools/                     # sync_render_core.py（安卓副本同步）/ render_regression.py（像素回归）
 ├── openspec/                  # 规格变更记录
-└── docs/                      # 文档与截图
+└── docs/                      # 文档与截图（handoffs/ packaging/ 等）
 ```
 
 ## 测试
@@ -98,10 +103,11 @@ poster-again/
 无测试框架配置，全部为独立脚本：
 
 ```bash
-.venv\Scripts\python.exe tests\unit\test_render_core.py        # 引擎
-.venv\Scripts\python.exe tests\unit\test_font_registry.py      # 字体（23 项）
-.venv\Scripts\python.exe tests\unit\test_poster_bridge.py      # 安卓桥接
-# ...共 40+ 文件，改哪测哪
+.venv\Scripts\python.exe tests\run_all.py                    # 全量：应用 + 两个库
+.venv\Scripts\python.exe libs\render_core\tests\run_tests.py # 渲染库（12 个）
+.venv\Scripts\python.exe libs\fontfx\tests\run_tests.py      # 特效库（4 个）
+.venv\Scripts\python.exe tests\unit\test_template_restore.py # 恢复式批量等价性
+# 改渲染引擎后跑像素回归：tools/render_regression.py
 ```
 
 ## 版本历史

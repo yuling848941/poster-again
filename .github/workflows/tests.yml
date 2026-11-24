@@ -7,7 +7,8 @@ on:
 
 jobs:
   unit:
-    # 仅跑 Python 单测（tests/run_all.py，默认跳过需 Office COM 的用例）。
+    # 跑全部 Python 单测：tests/run_all.py 会先跑应用用例，再跑 libs/fontfx 和
+    # libs/render_core 各自的测试（默认跳过需 Office COM 的用例）。
     # 安卓构建不入 CI：无 gradle wrapper 且 Chaquopy 依赖本机 SDK/构建环境，
     # 仍按 AGENTS.md 本地构建流程执行。
     runs-on: windows-latest
@@ -22,9 +23,12 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: 全量单元测试
+      - name: 全量单元测试（应用 + 两个库）
         shell: cmd
         run: python tests\run_all.py --timeout 420
 
-      - name: render_core 双副本一致性校验
+      - name: 两个库能正常打包成 wheel
+        run: python -m pip wheel --no-deps -w wheels libs/fontfx libs/render_core
+
+      - name: fontfx + render_core 双副本一致性校验（安卓内嵌副本）
         run: python tools/sync_render_core.py --check

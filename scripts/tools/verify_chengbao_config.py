@@ -86,7 +86,7 @@ def test_real_config():
     print("=" * 70)
 
     # 文件路径
-    config_file = "承保.pptcfg"
+    config_file = "samples/presets/承保.pptcfg"
     excel_file = "KA承保快报.xlsx"
 
     try:

@@ -14,7 +14,7 @@ def extract_placeholders():
     try:
         from src.core.template_processor import TemplateProcessor
 
-        template_file = "10月递交贺报(3).pptx"
+        template_file = "samples/templates/10月递交贺报(3).pptx"
 
         if not os.path.exists(template_file):
             print(f"模板文件不存在: {template_file}")

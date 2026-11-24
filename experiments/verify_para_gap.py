@@ -12,7 +12,7 @@ from PIL import Image
 from pptx import Presentation
 from pptx.util import Inches
 
-from src.core.processors.pillow_image_exporter import PillowImageExporter
+from render_core.pillow_image_exporter import PillowImageExporter
 
 
 def add_para(tf, text, sz=3600):

@@ -137,8 +137,8 @@ def tap_text(text, timeout=15):
 
 
 def main():
-    data_file = sys.argv[1] if len(sys.argv) > 1 else "batch_data.csv"
-    tpl_file = sys.argv[2] if len(sys.argv) > 2 else "batch_tpl.pptx"
+    data_file = sys.argv[1] if len(sys.argv) > 1 else "samples/data/batch_data.csv"
+    tpl_file = sys.argv[2] if len(sys.argv) > 2 else "samples/templates/batch_tpl.pptx"
     repo = HERE.parent
     # 安装最新构建的 debug APK（避免对旧包跑 E2E 得出错误结论）
     apk_dir = HERE / "app" / "build" / "outputs" / "apk" / "debug"

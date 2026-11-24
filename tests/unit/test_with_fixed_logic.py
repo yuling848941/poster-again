@@ -22,7 +22,7 @@ def test_with_fixed_logic():
         print("=== 验证文本增加规则只应用到匹配的占位符 ===")
 
         # 1. 加载实际配置
-        config_file = os.path.join(PROJECT_ROOT, "递交.pptcfg")
+        config_file = os.path.join(PROJECT_ROOT, "samples/presets/递交.pptcfg")
         if not os.path.exists(config_file):
             print(f"[ERROR] 配置文件不存在: {config_file}")
             return False

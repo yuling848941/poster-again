@@ -48,9 +48,9 @@ def test_placeholders(ppt_path):
 if __name__ == "__main__":
     # 使用仓库内实际存在的模板，避免交互式 input()
     candidates = [
-        os.path.join(PROJECT_ROOT, "10月递交贺报(3).pptx"),
-        os.path.join(PROJECT_ROOT, "10月承保贺报(3).pptx"),
-        os.path.join(PROJECT_ROOT, "01、每日贺报 - 发2 .pptx"),
+        os.path.join(PROJECT_ROOT, "samples/templates/10月递交贺报(3).pptx"),
+        os.path.join(PROJECT_ROOT, "samples/templates/10月承保贺报(3).pptx"),
+        os.path.join(PROJECT_ROOT, "samples/templates/01、每日贺报 - 发2 .pptx"),
     ]
     ppt_path = next((p for p in candidates if os.path.exists(p)), candidates[0])
     print(f"使用模板: {ppt_path}")

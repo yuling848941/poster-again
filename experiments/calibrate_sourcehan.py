@@ -108,12 +108,10 @@ def main():
 
     try:
         from src.core.processors.com_image_exporter import COMImageExporter
-        from src.core.processors.pillow_image_exporter import PillowImageExporter
-        from src.core.processors import font_registry as fr
     except ImportError:
         from core.processors.com_image_exporter import COMImageExporter
-        from core.processors.pillow_image_exporter import PillowImageExporter
-        from core.processors import font_registry as fr
+    from render_core.pillow_image_exporter import PillowImageExporter
+    from render_core import font_registry as fr
 
     m = fr._BUNDLED_FAMILIES[family]['metrics']
     print(f"当前 {family} 常数: ratio={m.line_height_ratio} a={m.baseline_a} "

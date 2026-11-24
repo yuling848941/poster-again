@@ -40,7 +40,7 @@ def debug_real_sync_issue():
         print("\n2. 获取模板占位符...")
         from src.core.template_processor import TemplateProcessor
 
-        template_file = "10月递交贺报(3).pptx"
+        template_file = "samples/templates/10月递交贺报(3).pptx"
         processor = TemplateProcessor()
         processor.load_template(template_file)
 
