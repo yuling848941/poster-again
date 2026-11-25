@@ -99,15 +99,6 @@ The `ph_` prefix is defined in `PPTXProcessor.PLACEHOLDER_PREFIX`. Field names m
 - **改渲染引擎后务必跑像素回归**：`tools/render_regression.py`（corpus 采样 / verify 对比），确认输出逐像素不变
 - **Always run the specific test file related to your change**
 
-## OpenSpec Workflow
-
-This repo uses OpenSpec for spec-driven development. See `openspec/AGENTS.md` for full details.
-
-**When to use:** New features, breaking changes, architecture shifts, performance optimization.
-**When to skip:** Bug fixes, typos, formatting, dependency updates, tests for existing behavior.
-
-Before any task: run `openspec list` and `openspec list --specs` to check for existing work and conflicts.
-
 ## Build / Distribution
 
 - PyInstaller spec: `PosterAgain.spec`（`pathex` 指向 `libs/*/src`，`datas` 含 `resources/` 与库内捆绑字体 `render_core/resources/fonts`）

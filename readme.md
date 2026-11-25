@@ -94,7 +94,6 @@ poster-again/
 ├── resources/                 # 图标等（字体已随 render_core 库）
 ├── tests/                     # 应用独立测试脚本 + run_all.py 全量回归
 ├── tools/                     # sync_render_core.py（安卓副本同步）/ render_regression.py（像素回归）
-├── openspec/                  # 规格变更记录
 └── docs/                      # 文档与截图（handoffs/ packaging/ 等）
 ```
 
