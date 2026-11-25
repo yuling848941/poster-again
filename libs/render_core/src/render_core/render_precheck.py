@@ -47,7 +47,7 @@ normAutofit 缩字（AUTOFIT_SCALE）、文字纯色描边（TEXT_STROKE）、
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Set
+from typing import Callable, List, Optional, Set
 
 from pptx import Presentation
 from pptx.oxml.ns import qn
@@ -72,12 +72,17 @@ class PrecheckIssue:
 class RenderPrecheck:
     """PPTX 渲染预检器（白名单制）"""
 
-    def __init__(self, installed_fonts: Optional[Set[str]] = None):
+    def __init__(self, installed_fonts: Optional[Set[str]] = None,
+                 font_resolver: Optional[Callable[[str], bool]] = None):
         """
         Args:
             installed_fonts: 系统已安装字体名集合（小写）。None 表示跳过字体检查。
+            font_resolver: 字体名 -> 能否解析到字体文件（font_registry.is_resolvable）。
+                名字集合里查不到时再问它一次，避免「能解析但名字对不上登记名」的字体
+                被误报（如按 PostScript 名、别名命中的系统字体）。
         """
         self.installed_fonts = installed_fonts
+        self.font_resolver = font_resolver
 
     # ---------------- 入口 ----------------
 
@@ -291,7 +296,9 @@ class RenderPrecheck:
         if props['typeface'] and self.installed_fonts is not None:
             tfn = props['typeface'].lower()
             if not (tfn in self.installed_fonts or
-                    any(tfn in f for f in self.installed_fonts)):
+                    any(tfn in f for f in self.installed_fonts) or
+                    (self.font_resolver is not None
+                     and self.font_resolver(props['typeface']))):
                 issues.append(PrecheckIssue(
                     idx, name, 'FONT_MISSING',
                     f'字体 {props["typeface"]!r} 未安装，将回退微软雅黑'

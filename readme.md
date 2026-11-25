@@ -25,7 +25,7 @@
 - **颜色系统**：srgbClr/schemeClr/sysClr/prstClr + lumMod/lumOff/satMod、渐变同位置 stop 覆盖（PowerPoint 语义）
 - **排版**：typographic 行距模型（相邻行推进 = descent+ascent）、基线仿射模型（思源/雅黑分别校准）、normAutofit 缩字
 - **形状**：18 种预设几何、旋转/翻转、组合递归、纯色/线性渐变/图片填充、形状阴影
-- **字体**：捆绑思源黑体/宋体（SIL OFL，在 `render_core/resources/fonts/`）+ 系统字体 + PPTX 内嵌字体（含 ODTTF 解混淆）+ 本机扩展字体目录静默扫描
+- **字体**：按名字使用系统已安装字体（Windows：枚举字体目录与注册表、读字体内部名；支持 TTC 多字面与可变字体实例，思源 ↔ Noto CJK、SC ↔ CN 视为同一套）+ 固定系统路径表 + PPTX 内嵌字体（含 ODTTF 解混淆）+ 本机扩展字体目录静默扫描 + 捆绑思源黑体/宋体（SIL OFL，在 `render_core/resources/fonts/`；安卓必带，桌面版 exe 不打包）。找不到的字体回退系统微软雅黑
 - **批量提速**：模板只解析一次、逐行「替换→渲染→恢复」；背景图缩放后跨行缓存；已压缩媒体保存时不再重复 deflate（50MB 模板约 6.1s/行 → 1.1s/行，输出逐像素不变）
 - **内存受限路径**：JPEG draft 降采样、先缩放后补 alpha（安卓 50MB 模板可用）
 - **溢出语义**：文本溢出文本框时渐变端点色延伸（与 PowerPoint 一致）
@@ -79,7 +79,7 @@ poster-again/
 ├── main.py                    # 桌面端入口（文件日志 + 全局异常钩子）
 ├── libs/
 │   ├── fontfx/                # ★ 纯 Pillow 文字特效库（渐变/发光/阴影/描边/图片填充）
-│   └── render_core/           # ★ PPTX→图片渲染库（依赖 fontfx；含捆绑字体 resources/fonts/）
+│   └── render_core/           # ★ PPTX→图片渲染库（依赖 fontfx；库内带思源字体 resources/fonts/ 供安卓与开发用）
 ├── src/
 │   ├── gui/                   # PySide6 界面（含取消生成）
 │   ├── ppt_generator.py       # 批量生成编排（恢复式复用 + 容错 + 降级）
@@ -91,7 +91,7 @@ poster-again/
 │   ├── app/src/main/python/   # poster_bridge 桥接 + render_core/fontfx 副本
 │   └── e2e_batch.py           # 模拟器自动化测试
 ├── samples/                   # 业务样例（gitignored）：templates/ data/ presets/
-├── resources/                 # 图标等（字体已随 render_core 库）
+├── resources/                 # 图标等（桌面版 exe 不打包字体：按名字用系统已安装字体）
 ├── tests/                     # 应用独立测试脚本 + run_all.py 全量回归
 ├── tools/                     # sync_render_core.py（安卓副本同步）/ render_regression.py（像素回归）
 └── docs/                      # 文档与截图（handoffs/ packaging/ 等）

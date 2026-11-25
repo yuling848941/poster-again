@@ -373,7 +373,8 @@ class PPTGenerator:
                 installed |= FontChecker().get_installed_fonts()
             except Exception as e:
                 logger.debug(f"系统字体检查跳过（仅用注册字体集）: {e}")
-            return list(RenderPrecheck(installed_fonts=installed)
+            return list(RenderPrecheck(installed_fonts=installed,
+                                       font_resolver=font_registry.is_resolvable)
                         .check_pptx(self.template_path))
         except Exception as e:
             logger.debug(f"模板预检失败（不影响生成）: {e}")

@@ -46,6 +46,8 @@ cd android && "$LOCALAPPDATA/gradle-8.6/bin/gradle.bat" assembleDebug   # Build 
 - `libs/fontfx` (`fontfx`) — pure-Pillow text effects: linear gradient / image fill / glow / shadow / stroke / decorations / synthetic italic. No PPTX dependency; usable by any Pillow project.
 - `libs/render_core` (`render_core`, distribution name `pptx-render-core`) — PPTX→image engine: format inheritance, layout, precheck, shape geometry, font registry, batch personalization. Delegates "how a glyph looks" to `fontfx`. Bundled Source Han fonts live in `render_core/resources/fonts/` (SIL OFL) + per-font calibrated layout metrics in `font_registry.py`.
 
+**Font resolution (built-in engine, Windows):** typefaces are matched **by name against installed system fonts** — `font_registry` builds a name→file index from `%WINDIR%\Fonts`, the per-user font dir and the registry (reads each face's `name` table with stdlib `struct`; handles TTC face index, variable-font named instances, and treats 思源 ↔ Noto CJK / SC ↔ CN as the same design). Lookup order: fixed system path table (微软雅黑/宋体/黑体/楷体) → local WPS font dirs → system fonts by name → bundled Source Han → pptx-embedded fonts → fallback 微软雅黑. Unresolvable names fall back to 微软雅黑 (precheck reports `FONT_MISSING`). **The desktop exe does not bundle the Source Han fonts** (33.5 MiB saved); they are still bundled in the Android APK (no system fonts there) and usable on desktop via a `resources/fonts/` folder next to the exe.
+
 **Cross-platform note:** the Android app (`android/`, Kotlin/Compose + Chaquopy) embeds copies of both packages under `app/src/main/python/` (pip unavailable there). Font policy: `auto` (Windows system-first, other platforms bundled-first), override via `image_generation.font_policy` or `POSTERAGAIN_FONT_POLICY`. Image cache budget via `POSTERAGAIN_PIC_CACHE_MB` (default 256; Android bridge sets 64).
 
 ### Module boundaries
@@ -90,18 +92,18 @@ The `ph_` prefix is defined in `PPTXProcessor.PLACEHOLDER_PREFIX`. Field names m
 
 ## Testing
 
-- 52 test files in `tests/unit/`, all standalone scripts; plus 4 in `libs/fontfx/tests/` and 12 in `libs/render_core/tests/`
+- 52 test files in `tests/unit/`, all standalone scripts; plus 4 in `libs/fontfx/tests/` and 13 in `libs/render_core/tests/`
 - Each test adds the needed roots to `sys.path` itself, so they run directly from the repo root: `.venv\Scripts\python.exe tests\unit\test_xxx.py`
 - No test framework config — just `python tests\unit\test_xxx.py`
 - **全量回归**：`.venv\Scripts\python.exe tests\run_all.py`（先跑应用用例，再跑两个库的测试；`--app-only` 只跑应用）。CI 用它 + `tools/sync_render_core.py --check` + wheel 构建
 - Many tests are historical "fix verification" scripts (e.g. `test_config_sync_fix.py`, `test_placeholder_fix.py`)
-- The most relevant for new work: `test_pptx_processor.py`, `test_template_restore.py`（恢复式批量等价性）, `test_batch_fault_tolerance.py`（容错/降级/取消）, `libs/render_core/tests/`（渲染）
+- The most relevant for new work: `test_pptx_processor.py`, `test_template_restore.py`（恢复式批量等价性）, `test_batch_fault_tolerance.py`（容错/降级/取消）, `libs/render_core/tests/`（渲染；字体解析看 `test_system_fonts.py`、`test_font_registry.py`）
 - **改渲染引擎后务必跑像素回归**：`tools/render_regression.py`（corpus 采样 / verify 对比），确认输出逐像素不变
 - **Always run the specific test file related to your change**
 
 ## Build / Distribution
 
-- PyInstaller spec: `PosterAgain.spec`（`pathex` 指向 `libs/*/src`，`datas` 含 `resources/` 与库内捆绑字体 `render_core/resources/fonts`）
+- PyInstaller spec: `PosterAgain.spec`（`pathex` 指向 `libs/*/src`，`datas` 只含 `resources/`；**不打包思源字体**——桌面版按名字用系统字体，要恢复捆绑见 spec 文件头第 5 条）
 - Build script: `build_exe.py` (cleans old dist/build, runs pyinstaller)
 - Windows shortcut: `打包.bat`
 - Output: `dist/PosterAgain.exe`
@@ -119,5 +121,6 @@ The `ph_` prefix is defined in `PPTXProcessor.PLACEHOLDER_PREFIX`. Field names m
 - **渲染库在两处**：`libs/render_core/src/render_core/`（桌面/可编辑安装）与 `android/app/src/main/python/render_core/`（安卓 APK 内副本，字体在包内 `resources/fonts/`）；`fontfx` 同理。改完库代码跑 `tools/sync_render_core.py` 同步安卓副本（CI `--check` 防漂移）
 - **批量生成用「恢复式复用」**：`PPTXProcessor.restore_template()` 逐行撤销占位符替换（等价于重新加载但无需重新解包），使渲染器字体/图片缓存跨行生效。`pptx_fast_save.py` 对已压缩媒体不再重复 deflate（首次使用自动与标准保存逐成员校验）。两者都经 `test_template_restore.py` 与像素回归验证
 - **排版校准常数是字体绑定的**：`font_registry.py` 按物理字体提供 `line_height_ratio + 首行基线仿射 (baseline_a, baseline_g)×lnSpc`。换字体必须用 `experiments/calibrate_sourcehan.py`（需本机 PowerPoint COM + 字体同时装入用户字体）重校，勿手调
+- **按名匹配的系统字体没有逐字体校准**：只有微软雅黑和思源（黑体/宋体）做过 COM 对照校准，其余系统字体（Calibri、Arial、等线…）沿用雅黑的行高常数，多行文字行高可能有细微偏差。系统字体索引首次使用时构建（约 100~250ms），之后缓存；新装字体最迟 5 秒后生效（或调 `font_registry.invalidate_system_fonts()`）。新增字体匹配规则先过 `libs/render_core/tests/test_system_fonts.py`
 - **安卓构建版本矩阵（实测可用）**：AGP 8.2.2 + Gradle 8.6 + JDK 17 + Chaquopy 16.1.0 + 目标 Python 3.12。Chaquopy 15.x 在构建机 Python 3.13 上会因 `cgi` 模块移除而失败
 - **安卓模拟器内存**：largeHeap 已开；背景图建议 JPEG（draft 解码降采样，峰值 ~143MB vs PNG ~384MB @4000×6000）；图片缓存上限安卓桥接设为 64MB
