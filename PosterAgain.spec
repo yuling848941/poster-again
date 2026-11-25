@@ -119,6 +119,7 @@ a = Analysis(
         'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
         'pandas', 'openpyxl', 'pptx', 'numpy', 'yaml', 'psutil',
         'fontTools', 'fontTools.ttLib',
+        'src.cli',  # 命令行入口（main.py 带参数时走 CLI，确保打包后可用）
     ],
     hookspath=[],
     hooksconfig={},

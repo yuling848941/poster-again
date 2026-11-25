@@ -80,33 +80,42 @@
 
 ### 命令行界面
 
+`main.py` 带参数即走命令行（不启动 GUI），`cli.py` 为等价薄封装；打包后的 exe 带参数同样可用。
+
 基本用法：
 ```
 python cli.py --template 模板文件.pptx --data 数据文件.xlsx --output 输出目录
 ```
 
-高级选项：
+常用选项：
 ```
-python cli.py \
-  --template 模板文件.pptx \
-  --data 数据文件.xlsx \
-  --output 输出目录 \
-  --config 配置文件.json \
-  --prefix 文件名前缀 \
-  --suffix 文件名后缀 \
-  --threshold 0.8 \
-  --preview
+python cli.py -t 模板.pptx -d 数据.csv -o 输出目录 --images --image-quality 2
+python cli.py -t 模板.pptx -d 数据.xlsx --preview          # 只看匹配，不生成
+python cli.py -t 模板.pptx -d 数据.xlsx -o out --rows 2,5  # 重跑指定行（0 起）
+python cli.py -t 模板.pptx -d 数据.xlsx -o out --preset 承保.pptcfg   # 用界面保存的配置
+python cli.py -t 模板.pptx -d 数据.xlsx -o out --map ph_姓名=营销员姓名 --add-suffix ph_支公司=中支
 ```
 
 参数说明：
-- `--template`: PowerPoint模板文件路径
-- `--data`: 数据文件路径（Excel、CSV或JSON）
-- `--output`: 输出目录路径
-- `--config`: 配置文件路径（可选）
-- `--prefix`: 生成文件名前缀（可选）
-- `--suffix`: 生成文件名后缀（可选）
-- `--threshold`: 匹配阈值（0-1，可选）
-- `--preview`: 预览模式，只显示匹配结果不生成文件（可选）
+- `--template`/`-t`: PowerPoint模板文件路径
+- `--data`/`-d`: 数据文件路径（Excel、CSV或JSON）
+- `--output`/`-o`: 输出目录路径（`--preview` 时可省略）
+- `--config`: 配置文件路径（.yaml/.json，可选）
+- `--sheet`: Excel 工作表名（可选）
+- `--images` / `--image-format` / `--image-quality`: 输出图片及格式/缩放倍数
+- `--engine`: 图片导出引擎 python/office/auto（可选）
+- `--prefix` / `--suffix`: 生成文件名前缀/后缀（可选）
+- `--rows`: 只生成指定行（0 起行标签，逗号分隔，用于重跑失败行）
+- `--preset`: 匹配预设文件（界面保存的 .pptcfg；`matching_rules` 列表为完整规则集，`gui_settings` 叠加）
+- `--map 占位符=数据列`: 手工指定匹配规则（可重复）
+- `--add-prefix` / `--add-suffix 占位符=文字`: 替换文字的前后缀（可重复）
+- `--preview`: 预览模式，只显示匹配结果不生成文件
+- `--quiet`/`-q`: 不打印逐行进度
+
+没匹配到数据列的占位符会保留模板原文并在生成前警告。
+
+退出码：0 全部成功 / 1 有失败行 / 2 致命错误。完整参数见 `python cli.py --help`。
+（注：匹配器为精确匹配，无模糊匹配阈值，故不提供旧文档曾规划的 `--threshold`。）
 
 ## 模板制作指南
 

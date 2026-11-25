@@ -161,6 +161,12 @@ def create_readme(dist_dir: Path):
 2. 无需安装 Microsoft Office、WPS 或任何其他软件，开箱即用
 3. 如遇到杀毒软件警告，请选择"允许"
 
+【命令行批量生成（可选）】
+ PosterAgain.exe --template 模板.pptx --data 数据.xlsx --output 输出目录
+ 加 --images 输出图片；--preview 只看匹配；--preset 配置.pptcfg 用保存的匹配配置；
+ --map 占位符=数据列 手工补匹配；--help 查看全部参数。
+ 退出码 0 成功 / 1 有失败行 / 2 致命错误，便于脚本调用。
+
 【基本流程】
 1. 选择 PPT 模板文件、Excel/CSV 数据文件、输出目录
    - "最近"按钮可直接选用上次的文件/目录，通常三步点击即可开始

@@ -1,6 +1,6 @@
 """
 数据读取模块
-用于读取和处理Excel数据文件
+用于读取和处理 Excel / CSV / JSON 数据文件
 """
 
 import pandas as pd
@@ -110,6 +110,11 @@ class DataReader:
                 logger.error(f"文件不存在: {file_path}")
                 return False
 
+            # CSV / JSON 按扩展名分流（无工作表概念）；Excel 走原有内存处理路径
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in ('.csv', '.json'):
+                return self._load_csv_json(file_path, ext, use_thousand_separator)
+
             # 使用内存处理获取数据
             try:
                 processed_data = self.get_processed_data(
@@ -168,6 +173,46 @@ class DataReader:
             self.close()
             return False
     
+    def _load_csv_json(self, file_path: str, ext: str,
+                       use_thousand_separator: bool = True) -> bool:
+        """加载 CSV / JSON 数据（无工作表概念）。
+        CSV 依次尝试 utf-8-sig/gbk/utf-8 编码；JSON 支持对象数组或 {"rows": [...]}。
+        与 Excel 路径一致地可选加千位分隔符。失败抛异常由 load_excel 统一捕获。"""
+        self.close()
+        if ext == '.csv':
+            df = None
+            for enc in ('utf-8-sig', 'gbk', 'utf-8'):
+                try:
+                    df = pd.read_csv(file_path, encoding=enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if df is None:
+                raise ValueError('CSV 编码无法识别（已尝试 utf-8/gbk）')
+        else:  # .json
+            import json
+            with open(file_path, 'r', encoding='utf-8-sig') as f:
+                obj = json.load(f)
+            if isinstance(obj, dict) and isinstance(obj.get('rows'), list):
+                obj = obj['rows']
+            if not isinstance(obj, list):
+                raise ValueError('JSON 需为对象数组（或 {"rows": [对象, ...]}）')
+            df = pd.DataFrame(obj)
+
+        if use_thousand_separator:
+            try:
+                df = self.memory_manager.formatter.add_thousands_separator(df)
+            except Exception as e:
+                logger.debug(f"CSV/JSON 千位分隔符格式化跳过: {e}")
+
+        self.data = df
+        self.file_path = file_path
+        self.current_sheet = '默认工作表'
+        self.sheet_names = [self.current_sheet]
+        logger.info(f"成功加载{ext[1:].upper()}文件: {file_path}, "
+                    f"数据行数: {len(df)}, 列数: {len(df.columns)}")
+        return True
+
     def close(self):
         """关闭Excel文件，释放资源"""
         if self.excel_file is not None:

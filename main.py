@@ -103,30 +103,43 @@ def _install_excepthooks():
 
 
 # 导入项目模块（保持 src. 前缀 + 扁平导入的双模式回退）
+# GUI 相关导入延迟到 main() 的界面分支：命令行模式（src.cli）不需要 PySide6 界面
 try:
     from src.config import ConfigManager
-    from src.gui.main_window import MainWindow
 except ImportError:
     from config_manager import ConfigManager
-    from gui.main_window import MainWindow
-
-from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QIcon
+# main.py 已把项目根加入 sys.path，src.cli 包必然可导入（不做扁平回退，
+# 以免误指向根目录的 cli.py 薄封装）
+from src.cli import is_cli_mode
 
 # 程序启动时初始化配置管理器（模块级单例，导入 main 会有副作用，AGENTS.md 已说明）
 config_manager = ConfigManager("config/config.yaml")
 
 
 def main():
-    """主函数"""
+    """主函数：带命令行参数走 CLI（无人值守），否则启动 GUI"""
     setup_logging()
-    logger.info("启动 PPT 批量生成工具")
-    logger.info("使用纯 Python PPTX 处理器（PPT 生成无需 Office/WPS）")
 
     # 字体解析策略注入（image_generation.font_policy，见 font_registry.py）
     from render_core import font_registry
     font_registry.set_policy(str(config_manager.get(
         "image_generation.font_policy", "auto") or "auto"))
+
+    # 命令行模式：复用同一条生成管线，不启动 GUI（打包后的 exe 同样可用）
+    if is_cli_mode(sys.argv[1:]):
+        from src.cli import run
+        sys.exit(run())
+
+    logger.info("启动 PPT 批量生成工具")
+    logger.info("使用纯 Python PPTX 处理器（PPT 生成无需 Office/WPS）")
+
+    # GUI 导入（仅界面分支需要）
+    try:
+        from src.gui.main_window import MainWindow
+    except ImportError:
+        from gui.main_window import MainWindow
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QIcon
 
     app = QApplication(sys.argv)
 

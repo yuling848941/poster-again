@@ -48,6 +48,33 @@ python -m venv .venv
 - `auto`：检测到 Office 用 COM，否则内置
 - 环境变量 `POSTERAGAIN_IMAGE_ENGINE` 可临时覆盖；office/auto 下 COM 失败自动降级内置保持出图
 
+## 命令行（无人值守批量生成）
+
+`main.py` 带参数即走命令行（不启动 GUI），复用与界面完全相同的生成管线（容错/预检/引擎选择一致）。
+`cli.py` 是等价薄封装；打包后的 `PosterAgain.exe` 带参数同样可用。
+
+```bash
+python main.py --template 贺报.pptx --data 名单.xlsx --output out          # 生成 PPT
+python main.py -t 贺报.pptx -d 名单.csv -o out --images --image-quality 2  # 生成图片
+python main.py -t 贺报.pptx -d 名单.xlsx --preview                         # 只看匹配，不生成
+python main.py -t 贺报.pptx -d 名单.xlsx -o out --rows 2,5                 # 重跑指定行（0 起）
+PosterAgain.exe -t 贺报.pptx -d 名单.csv -o out --images --engine python   # 打包后无界面出图
+
+# 自动匹配不全时（业务模板常见），手工补规则——等价于界面匹配对话框里的设置
+python main.py -t 贺报.pptx -d 名单.xlsx -o out --preset 承保.pptcfg       # 用界面保存的配置
+python main.py -t 贺报.pptx -d 名单.xlsx -o out \
+    --map ph_姓名=营销员姓名 --map ph_险种=主线险种 \                      # 占位符 = 数据列（可重复）
+    --add-suffix ph_支公司=中支 --add-suffix ph_家族=家族                  # 文字前后缀（可重复）
+```
+
+常用参数：`--config 配置.yaml`、`--sheet 表名`、`--image-format PNG/JPG`、
+`--engine python/office/auto`、`--prefix 前缀`、`--suffix 后缀`、`--quiet`。
+`--preset` 认界面保存的两种 `.pptcfg`：`matching_rules` 列表（完整规则集，替换自动匹配）和
+`gui_settings`（文字前后缀/趸期映射，叠加在自动匹配上）。没匹配到数据列的占位符会保留模板原文，
+生成前会明确警告——先跑 `--preview` 核对匹配结果最稳妥。
+数据支持 Excel/CSV/JSON。退出码：`0` 全部成功 / `1` 有失败行 / `2` 致命错误（便于脚本判断）。
+完整参数见 `python cli.py --help`。
+
 ## 快速开始（Android）
 
 ```bash

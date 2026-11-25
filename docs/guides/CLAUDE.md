@@ -30,10 +30,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### 应用程序运行
 
 ```bash
-# GUI模式启动
+# GUI模式启动（不带参数）
 python main.py
 
-# CLI模式（如果存在）
+# CLI模式（带参数即走命令行，不启动 GUI；cli.py 为等价薄封装）
 python cli.py --template template.pptx --data data.xlsx --output ./output
 ```
 

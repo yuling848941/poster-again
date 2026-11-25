@@ -12,7 +12,9 @@ python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt   # 含两个本地库的可编辑安装（libs/fontfx、libs/render_core）
 
 # 运行程序 / 测试 / 打包（统一用 .venv）
-.venv/Scripts/python.exe main.py                       # Run GUI app
+.venv/Scripts/python.exe main.py                       # Run GUI app（不带参数）
+.venv/Scripts/python.exe main.py -t 模板.pptx -d 数据.xlsx -o 输出目录  # 命令行批量生成（带参数即走 CLI，不启动 GUI）
+.venv/Scripts/python.exe cli.py --help                 # 命令行帮助（cli.py 是 main.py CLI 模式的薄封装）
 .venv/Scripts/python.exe tests\unit\test_xxx.py        # Run a single test (standalone script)
 .venv/Scripts/python.exe tests\run_all.py              # 全量回归：应用用例 + 两个库的测试
 .venv/Scripts/python.exe -m PyInstaller PosterAgain.spec --noconfirm  # Build exe via spec
@@ -54,7 +56,8 @@ cd android && "$LOCALAPPDATA/gradle-8.6/bin/gradle.bat" assembleDebug   # Build 
 
 | Path | Role |
 |---|---|
-| `main.py` | Entry point — inits `ConfigManager`, sets up file logging + excepthooks, launches `MainWindow` |
+| `main.py` | Entry point — inits `ConfigManager`, sets up file logging + excepthooks; **带命令行参数走 `src.cli`（不启动 GUI），否则启动 `MainWindow`**（GUI 导入延迟到界面分支） |
+| `cli.py` / `src/cli/` | 命令行入口（无人值守批量生成）。`cli.py` 是薄封装；`src.cli.run(argv)` 复用 `PPTGenerator` 同一条管线（含承保趸期数据预处理），支持 `--preview`/`--images`/`--engine`/`--rows`/`--prefix`/`--suffix`，以及匹配规则 `--preset`（界面保存的 .pptcfg，两种格式都认）/`--map 占位符=数据列`/`--add-prefix`/`--add-suffix 占位符=文字`（可重复）。真实业务模板大多自动匹配不全，需靠这些参数补齐（与界面匹配对话框里的手工设置等价）；未匹配的占位符保留模板原文并警告。退出码 0/1/2。打包后的 exe 带参数同样可用（frozen 时附着父控制台）。单测 `tests/unit/test_cli.py` |
 | `src/gui/main_window.py` | PySide6 main window. UI logic, file selection, matching, generation orchestration, cancel |
 | `src/gui/ppt_worker_thread.py` | `QThread` for non-blocking generation. Signals: progress, log, match_completed, generation_completed, error; cooperative cancel |
 | `src/ppt_generator.py` | Coordinates `PPTXProcessor` + `DataReader` + `ExactMatcher` for batch generation (per-row replace→export→restore, fault tolerance, degraded rows) |
@@ -92,7 +95,7 @@ The `ph_` prefix is defined in `PPTXProcessor.PLACEHOLDER_PREFIX`. Field names m
 
 ## Testing
 
-- 52 test files in `tests/unit/`, all standalone scripts; plus 4 in `libs/fontfx/tests/` and 13 in `libs/render_core/tests/`
+- 53 test files in `tests/unit/`, all standalone scripts; plus 4 in `libs/fontfx/tests/` and 13 in `libs/render_core/tests/`
 - Each test adds the needed roots to `sys.path` itself, so they run directly from the repo root: `.venv\Scripts\python.exe tests\unit\test_xxx.py`
 - No test framework config — just `python tests\unit\test_xxx.py`
 - **全量回归**：`.venv\Scripts\python.exe tests\run_all.py`（先跑应用用例，再跑两个库的测试；`--app-only` 只跑应用）。CI 用它 + `tools/sync_render_core.py --check` + wheel 构建
@@ -107,7 +110,7 @@ The `ph_` prefix is defined in `PPTXProcessor.PLACEHOLDER_PREFIX`. Field names m
 - Build script: `build_exe.py` (cleans old dist/build, runs pyinstaller)
 - Windows shortcut: `打包.bat`
 - Output: `dist/PosterAgain.exe`
-- Hidden imports in spec include: `yaml`, `pandas`, `pptx`, `numpy`, `fontTools`, `win32com`, `pythoncom`, `pywintypes`
+- Hidden imports in spec include: `yaml`, `pandas`, `pptx`, `numpy`, `fontTools`, `win32com`, `pythoncom`, `pywintypes`, `src.cli`
 - Icon: `resources/icon.ico`
 
 ## Gotchas
@@ -124,3 +127,4 @@ The `ph_` prefix is defined in `PPTXProcessor.PLACEHOLDER_PREFIX`. Field names m
 - **按名匹配的系统字体没有逐字体校准**：只有微软雅黑和思源（黑体/宋体）做过 COM 对照校准，其余系统字体（Calibri、Arial、等线…）沿用雅黑的行高常数，多行文字行高可能有细微偏差。系统字体索引首次使用时构建（约 100~250ms），之后缓存；新装字体最迟 5 秒后生效（或调 `font_registry.invalidate_system_fonts()`）。新增字体匹配规则先过 `libs/render_core/tests/test_system_fonts.py`
 - **安卓构建版本矩阵（实测可用）**：AGP 8.2.2 + Gradle 8.6 + JDK 17 + Chaquopy 16.1.0 + 目标 Python 3.12。Chaquopy 15.x 在构建机 Python 3.13 上会因 `cgi` 模块移除而失败
 - **安卓模拟器内存**：largeHeap 已开；背景图建议 JPEG（draft 解码降采样，峰值 ~143MB vs PNG ~384MB @4000×6000）；图片缓存上限安卓桥接设为 64MB
+- **打包后 exe 的文字排版引擎取决于目标机器的 PATH（已知隐患，未修）**：Pillow 12 的 `_imagingft` 在运行时会到 PATH 上找可选排版库（别的软件目录里的 `libfribidi-0.dll`/harfbuzz/raqm），找到就启用 Raqm 排版，字间距与开发环境（基础排版，COM 校准基于它）略有不同；venv 里 Python 不从 PATH 找，所以源码运行恒为基础排版。本机装有 Tesseract-OCR 即触发：同一模板 exe 与源码产出不同，清空 PATH 后逐字节一致。用命令行（`--images`）校验 exe 产出时务必用干净 PATH（Git Bash：`PATH="/c/Windows/System32:/c/Windows" PosterAgain.exe ...`），否则会误判；要彻底消除机器差异需在渲染器里显式指定 `layout_engine`——这会改变部分机器上的出图，须确认后再做
