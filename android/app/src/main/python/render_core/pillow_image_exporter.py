@@ -165,20 +165,28 @@ def _tokenize(text):
 
 class _Style:
     __slots__ = ('size_pt', 'bold', 'italic', 'spc_pt', 'fill', 'shadow',
-                 'glow', 'stroke', 'strike', 'underline', 'font_path')
+                 'glow', 'stroke', 'strike', 'underline', 'font_path',
+                 'font_index', 'font_variation')
 
     def __init__(self, size_pt, bold, italic, spc_pt, fill, shadow, glow,
-                 stroke, strike, underline, font_path):
+                 stroke, strike, underline, font_path,
+                 font_index=0, font_variation=''):
         self.size_pt, self.bold, self.italic = size_pt, bold, italic
         self.spc_pt, self.fill, self.shadow = spc_pt, fill, shadow
         self.glow, self.stroke = glow, stroke
         self.strike, self.underline = strike, underline
+        # 字体的完整身份 = 文件 + TTC 字面序号 + 可变字体实例
         self.font_path = font_path
+        self.font_index = font_index
+        self.font_variation = font_variation
 
     def key(self):
+        # 必须含字体身份：同一段文字按 key 合并后只用首字的字体画，
+        # 不同字体的两段若被并到一起，后面那段会画成前面的字体
         return (self.size_pt, self.bold, self.italic, self.spc_pt,
                 repr(self.fill), repr(self.shadow), repr(self.glow),
-                repr(self.stroke), self.strike, self.underline)
+                repr(self.stroke), self.strike, self.underline,
+                self.font_path, self.font_index, self.font_variation)
 
 
 def _font_path_for(typeface, bold):
@@ -192,10 +200,11 @@ def _style_from_props(run, props, theme_colors):
     shadow = _parse_shadow(rPr)
     glow = _parse_glow(rPr)
     stroke = _parse_stroke(rPr, theme_colors)
+    spec = font_registry.resolve(props['typeface'], props['bold'])
     return _Style(props['sz_pt'], props['bold'], props['italic'], props['spc_pt'],
                   props['fill'], shadow, glow, stroke,
                   props.get('strike', False), props.get('underline'),
-                  _font_path_for(props['typeface'], props['bold']))
+                  spec.path, spec.index, spec.variation)
 
 
 class _Xform:
@@ -259,7 +268,8 @@ class PillowImageExporter:
             installed |= font_registry.installed_system_fonts()
         except Exception as e:
             logger.debug(f"系统字体检查跳过（仅用注册表字体集）: {e}")
-        return RenderPrecheck(installed_fonts=installed).check_pptx(pptx_path)
+        return RenderPrecheck(installed_fonts=installed,
+                              font_resolver=font_registry.is_resolvable).check_pptx(pptx_path)
 
     def export_to_images(self, pptx_path: str, output_dir: str,
                          image_format: str = "PNG", quality: float = 1.0) -> List[str]:
@@ -880,11 +890,13 @@ class PillowImageExporter:
                             synthetic_italic=st.italic, decorations=tuple(decs))
 
     def _font(self, style):
-        key = (style.font_path, style.size_pt, style.bold, style.italic)
+        key = (style.font_path, style.size_pt, style.bold, style.italic,
+               style.font_index, style.font_variation)
         if key not in self.font_cache:
             size_px = style.size_pt * self._dpi / 72.0
             try:
-                font = ImageFont.truetype(style.font_path, size_px)
+                font = ImageFont.truetype(style.font_path, size_px,
+                                          index=style.font_index)
             except OSError as e:
                 # 最终兜底：常见 CJK 字体链逐个尝试，避免单个字体文件
                 # 缺失导致整个导出失败
@@ -902,5 +914,12 @@ class PillowImageExporter:
                             continue
                 else:
                     raise
+            if style.font_variation:
+                # 可变字体：切到指定的具名实例（粗细/宽窄）；切不了就用默认实例
+                try:
+                    font.set_variation_by_name(style.font_variation)
+                except Exception as e:
+                    logger.debug(f"可变字体实例 {style.font_variation!r} 不可用，"
+                                 f"用默认实例: {e}")
             self.font_cache[key] = font
         return self.font_cache[key]

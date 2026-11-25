@@ -25,7 +25,7 @@
 - **颜色系统**：srgbClr/schemeClr/sysClr/prstClr + lumMod/lumOff/satMod、渐变同位置 stop 覆盖（PowerPoint 语义）
 - **排版**：typographic 行距模型（相邻行推进 = descent+ascent）、基线仿射模型（思源/雅黑分别校准）、normAutofit 缩字
 - **形状**：18 种预设几何、旋转/翻转、组合递归、纯色/线性渐变/图片填充、形状阴影
-- **字体**：捆绑思源黑体/宋体（SIL OFL，在 `render_core/resources/fonts/`）+ 系统字体 + PPTX 内嵌字体（含 ODTTF 解混淆）+ 本机扩展字体目录静默扫描
+- **字体**：按名字使用系统已安装字体（Windows：枚举字体目录与注册表、读字体内部名；支持 TTC 多字面与可变字体实例，思源 ↔ Noto CJK、SC ↔ CN 视为同一套）+ 固定系统路径表 + PPTX 内嵌字体（含 ODTTF 解混淆）+ 本机扩展字体目录静默扫描 + 捆绑思源黑体/宋体（SIL OFL，在 `render_core/resources/fonts/`；安卓必带，桌面版 exe 不打包）。找不到的字体回退系统微软雅黑
 - **批量提速**：模板只解析一次、逐行「替换→渲染→恢复」；背景图缩放后跨行缓存；已压缩媒体保存时不再重复 deflate（50MB 模板约 6.1s/行 → 1.1s/行，输出逐像素不变）
 - **内存受限路径**：JPEG draft 降采样、先缩放后补 alpha（安卓 50MB 模板可用）
 - **溢出语义**：文本溢出文本框时渐变端点色延伸（与 PowerPoint 一致）
@@ -47,6 +47,33 @@ python -m venv .venv
 - `office`：Office/WPS COM 高保真（100% 保真，但每行有自动化开销，较慢）
 - `auto`：检测到 Office 用 COM，否则内置
 - 环境变量 `POSTERAGAIN_IMAGE_ENGINE` 可临时覆盖；office/auto 下 COM 失败自动降级内置保持出图
+
+## 命令行（无人值守批量生成）
+
+`main.py` 带参数即走命令行（不启动 GUI），复用与界面完全相同的生成管线（容错/预检/引擎选择一致）。
+`cli.py` 是等价薄封装；打包后的 `PosterAgain.exe` 带参数同样可用。
+
+```bash
+python main.py --template 贺报.pptx --data 名单.xlsx --output out          # 生成 PPT
+python main.py -t 贺报.pptx -d 名单.csv -o out --images --image-quality 2  # 生成图片
+python main.py -t 贺报.pptx -d 名单.xlsx --preview                         # 只看匹配，不生成
+python main.py -t 贺报.pptx -d 名单.xlsx -o out --rows 2,5                 # 重跑指定行（0 起）
+PosterAgain.exe -t 贺报.pptx -d 名单.csv -o out --images --engine python   # 打包后无界面出图
+
+# 自动匹配不全时（业务模板常见），手工补规则——等价于界面匹配对话框里的设置
+python main.py -t 贺报.pptx -d 名单.xlsx -o out --preset 承保.pptcfg       # 用界面保存的配置
+python main.py -t 贺报.pptx -d 名单.xlsx -o out \
+    --map ph_姓名=营销员姓名 --map ph_险种=主线险种 \                      # 占位符 = 数据列（可重复）
+    --add-suffix ph_支公司=中支 --add-suffix ph_家族=家族                  # 文字前后缀（可重复）
+```
+
+常用参数：`--config 配置.yaml`、`--sheet 表名`、`--image-format PNG/JPG`、
+`--engine python/office/auto`、`--prefix 前缀`、`--suffix 后缀`、`--quiet`。
+`--preset` 认界面保存的两种 `.pptcfg`：`matching_rules` 列表（完整规则集，替换自动匹配）和
+`gui_settings`（文字前后缀/趸期映射，叠加在自动匹配上）。没匹配到数据列的占位符会保留模板原文，
+生成前会明确警告——先跑 `--preview` 核对匹配结果最稳妥。
+数据支持 Excel/CSV/JSON。退出码：`0` 全部成功 / `1` 有失败行 / `2` 致命错误（便于脚本判断）。
+完整参数见 `python cli.py --help`。
 
 ## 快速开始（Android）
 
@@ -79,7 +106,7 @@ poster-again/
 ├── main.py                    # 桌面端入口（文件日志 + 全局异常钩子）
 ├── libs/
 │   ├── fontfx/                # ★ 纯 Pillow 文字特效库（渐变/发光/阴影/描边/图片填充）
-│   └── render_core/           # ★ PPTX→图片渲染库（依赖 fontfx；含捆绑字体 resources/fonts/）
+│   └── render_core/           # ★ PPTX→图片渲染库（依赖 fontfx；库内带思源字体 resources/fonts/ 供安卓与开发用）
 ├── src/
 │   ├── gui/                   # PySide6 界面（含取消生成）
 │   ├── ppt_generator.py       # 批量生成编排（恢复式复用 + 容错 + 降级）
@@ -91,10 +118,9 @@ poster-again/
 │   ├── app/src/main/python/   # poster_bridge 桥接 + render_core/fontfx 副本
 │   └── e2e_batch.py           # 模拟器自动化测试
 ├── samples/                   # 业务样例（gitignored）：templates/ data/ presets/
-├── resources/                 # 图标等（字体已随 render_core 库）
+├── resources/                 # 图标等（桌面版 exe 不打包字体：按名字用系统已安装字体）
 ├── tests/                     # 应用独立测试脚本 + run_all.py 全量回归
 ├── tools/                     # sync_render_core.py（安卓副本同步）/ render_regression.py（像素回归）
-├── openspec/                  # 规格变更记录
 └── docs/                      # 文档与截图（handoffs/ packaging/ 等）
 ```
 

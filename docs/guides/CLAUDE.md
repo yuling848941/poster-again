@@ -2,25 +2,6 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-<!-- OPENSPEC:START -->
-# OpenSpec Instructions
-
-These instructions are for AI assistants working in this project.
-
-Always open `@/openspec/AGENTS.md` when the request:
-- Mentions planning or proposals (words like proposal, spec, change, plan)
-- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work
-- Sounds ambiguous and you need the authoritative spec before coding
-
-Use `@/openspec/AGENTS.md` to learn:
-- How to create and apply change proposals
-- Spec format and conventions
-- Project structure and guidelines
-
-Keep this managed block so 'openspec update' can refresh the instructions.
-
-<!-- OPENSPEC:END -->
-
 ## 项目概述
 
 这是一个基于PySide6和Python的PPT批量生成工具，支持从Excel、CSV和JSON文件读取数据，并使用PowerPoint模板自动生成个性化PPT文档。项目通过COM接口与PowerPoint集成，保持PPT中的复杂特效。
@@ -49,10 +30,10 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 ### 应用程序运行
 
 ```bash
-# GUI模式启动
+# GUI模式启动（不带参数）
 python main.py
 
-# CLI模式（如果存在）
+# CLI模式（带参数即走命令行，不启动 GUI；cli.py 为等价薄封装）
 python cli.py --template template.pptx --data data.xlsx --output ./output
 ```
 
@@ -133,14 +114,3 @@ python cleanup_tempfiles.py
 - GUI模式通过`QMessageBox`显示用户友好的错误信息
 - 所有异常都应记录详细的堆栈跟踪信息
 - 提供详细的操作日志用于问题排查
-
-## OpenSpec工作流程
-
-项目使用OpenSpec进行规范驱动的开发：
-
-1. **提案创建**: 使用`/openspec:proposal`命令创建新的功能提案
-2. **设计阶段**: 提案通过后进行技术设计和任务分解
-3. **实现阶段**: 按照任务清单进行开发实现
-4. **归档阶段**: 完成后使用`/openspec:archive`归档变更
-
-所有架构变更、新功能开发或重大优化都应遵循OpenSpec流程。

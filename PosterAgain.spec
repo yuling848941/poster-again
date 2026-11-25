@@ -12,7 +12,12 @@ PosterAgain PyInstaller spec
    - qdirect2d：备用平台插件（仅 QT_QPA_PLATFORM=direct2d 时加载）
    - Qt6Network 链路：无任何网络代码（TLS/networkinformation 插件随删）
    注意：numpy 的 OpenBLAS（~19MB）不能删--numpy 2.x import 时即硬链接，
-   删除直接崩溃（已实测）；字体不子集化（缺字形风险，违背"效果不变"）
+   删除直接崩溃（已实测）
+5. 不捆绑思源字体（exe 少 33.5MB）：内置渲染引擎按名字使用系统已安装字体
+   （font_registry 的系统字体索引），模板里的字体只要系统装了就能用，没装的回退
+   系统微软雅黑。需要思源而系统没装时：把字体文件放到 exe 旁的 resources/fonts/
+   即可被识别（bundled_font_dir 的候选目录之一），或把下面的 LIB_FONTS 加回 datas。
+   安卓 APK 里仍自带思源（那边没有系统字体），与桌面版无关。
 """
 
 import os
@@ -100,8 +105,8 @@ LIB_SRC = [
     os.path.join(SPECPATH, 'libs', 'render_core', 'src'),
     os.path.join(SPECPATH, 'libs', 'fontfx', 'src'),
 ]
-# 渲染库的捆绑字体（思源黑体/宋体，SIL OFL）随库走：打进包内 render_core/resources/fonts，
-# font_registry.bundled_font_dir() 会按「包内 resources/fonts」找到它
+# 渲染库的捆绑字体（思源黑体/宋体，SIL OFL）。桌面版不再把它打进包（见文件头第 5 条）：
+# 保留这个定义只为方便恢复——把 LIB_FONTS 加回下面 Analysis 的 datas 即可。
 LIB_FONTS = (os.path.join(SPECPATH, 'libs', 'render_core', 'src', 'render_core', 'resources'),
              os.path.join('render_core', 'resources'))
 
@@ -109,11 +114,12 @@ a = Analysis(
     ['main.py'],
     pathex=LIB_SRC,
     binaries=[],
-    datas=[('resources', 'resources'), LIB_FONTS],
+    datas=[('resources', 'resources')],
     hiddenimports=[
         'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
         'pandas', 'openpyxl', 'pptx', 'numpy', 'yaml', 'psutil',
         'fontTools', 'fontTools.ttLib',
+        'src.cli',  # 命令行入口（main.py 带参数时走 CLI，确保打包后可用）
     ],
     hookspath=[],
     hooksconfig={},

@@ -5,10 +5,16 @@
 本模块自包含（仅标准库），安卓端 Chaquopy 嵌入引擎核心时连同
 resources/fonts/ 一起带走即可，无需改动。
 
-字体来源（按策略排序）：
+字体来源（system_first 下的查找顺序）：
+- 系统路径表：微软雅黑/宋体/黑体/楷体（Windows Fonts 路径表，自 pillow_image_exporter
+  迁移，保持原行为）
+- 本机扩展字体目录：WPS 缓存的字体（静默增强）
+- 系统已安装字体（按名字匹配）：枚举 Windows 字体目录与注册表登记的字体，读每个字面
+  的 name 表建索引，模板里写家族名/全名/PostScript 名都能命中（仅 Windows）
 - 捆绑字体 resources/fonts/：思源黑体 + 思源宋体（CN 子集，SIL OFL 1.1，
   可合法内嵌分发；微软雅黑为微软专有字体，禁止内嵌）
-- 系统字体：Windows Fonts 路径表（自 pillow_image_exporter 迁移，保持原行为）
+- 文档内嵌字体
+- 以上都没有：回退微软雅黑默认链
 
 解析策略（set_policy() 或环境变量 POSTERAGAIN_FONT_POLICY）：
 - auto（默认）：Windows 系统优先（现有渲染像素级不变），其他平台捆绑优先
@@ -23,8 +29,13 @@ resources/fonts/ 一起带走即可，无需改动。
 import io
 import logging
 import os
+import re
+import struct
 import sys
-from typing import NamedTuple, Optional, Set
+import threading
+import time
+import unicodedata
+from typing import Dict, FrozenSet, Iterable, List, NamedTuple, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +54,10 @@ class FontMetrics(NamedTuple):
 class FontSpec(NamedTuple):
     path: str          # 字体文件绝对路径
     metrics: FontMetrics
-    source: str        # 'bundled' | 'system'
+    source: str        # 'bundled' | 'system' | 'local' | 'embedded'
     family: str        # 'sans' | 'serif' | ''（默认链回退）
+    index: int = 0     # TTC/OTC 字体集合里的字面序号（ImageFont.truetype 的 index）
+    variation: str = ''  # 可变字体的具名实例（如 Bahnschrift 的 'SemiBold SemiCondensed'）
 
 
 # 微软雅黑 COM 逐像素校准值（原 pillow_image_exporter 常数的等价改写，勿改）
@@ -289,6 +302,461 @@ def _bundled_file(filename: str) -> Optional[str]:
     return p if os.path.exists(p) else None
 
 
+# ---------------- 系统已安装字体（按名字匹配）----------------
+# Windows 没有按字体名取文件的接口（Pillow 只认文件路径），所以自己建表：枚举系统/用户
+# 字体目录与注册表登记的字体文件，逐个字面读 name 表（家族名/全名/PostScript 名，含各
+# 语言写法），按「归一化名字 -> 字面」建索引。纯标准库 struct 解析，不依赖 fontTools；
+# 仅 Windows 生效，其他平台表为空、行为不变。表惰性构建并缓存，字体目录有增删时自动重建。
+
+_FONT_EXTS = ('.ttf', '.otf', '.ttc', '.otc')
+_SFNT_SIGS = (b'\x00\x01\x00\x00', b'OTTO', b'true', b'typ1')
+
+# 字重词（小写）-> 近似字重值（OpenType usWeightClass 口径）
+_WEIGHT_WORDS = {
+    'thin': 100, 'hairline': 100, 'extralight': 200, 'ultralight': 200,
+    'light': 300, 'semilight': 350, 'book': 400, 'regular': 400, 'normal': 400,
+    'roman': 400, 'plain': 400, 'medium': 500, 'demibold': 600, 'semibold': 600,
+    'bold': 700, 'extrabold': 800, 'ultrabold': 800, 'black': 900, 'heavy': 900,
+    'extrablack': 950, 'ultrablack': 950,
+}
+_BOLD_WORDS = frozenset(w for w, v in _WEIGHT_WORDS.items() if v >= 600)
+_WIDTH_WORDS = frozenset(('condensed', 'semicondensed', 'narrow', 'narrowed', 'compressed',
+                          'extended', 'semiextended', 'semiexpanded', 'expanded', 'wide',
+                          'monospaced', 'monospace'))
+_ITALIC_WORDS = frozenset(('italic', 'oblique', 'cursive', 'kursiv', 'slanted'))
+_STYLE_WORDS = frozenset(_WEIGHT_WORDS) | _WIDTH_WORDS | _ITALIC_WORDS
+
+# 同一套字体的不同写法（仅在简体范围内视为等价）：Adobe 思源 <-> Google Noto CJK，
+# 地区子集 SC <-> 语言子集 CN。模板写 SourceHanSerifSC-Bold 而机器装的是 CN 版时靠它命中
+_DESIGN_FAMILIES = (
+    ('思源黑体', 'sourcehansans', 'notosanscjk'),
+    ('思源宋体', 'sourcehanserif', 'notoserifcjk'),
+)
+_DESIGN_REGIONS = ('sc', 'cn', '')
+
+_SYSTEM_TABLE_RECHECK_SEC = 5.0     # 检查字体目录是否变化的最小间隔
+_system_table: Optional[dict] = None
+_system_names: FrozenSet[str] = frozenset()
+_system_design: Dict[str, str] = {}   # 归一化路径 -> 'sans' | 'serif'（系统里属于思源/Noto CJK 的字体）
+_system_table_sig = None
+_system_table_checked = 0.0
+_system_table_lock = threading.Lock()
+
+
+class _Face(NamedTuple):
+    """字体文件里的一个字面（TTC/OTC 集合里的一个成员）"""
+    path: str
+    index: int
+    bold: bool
+    italic: bool
+    weight: int
+    variations: Tuple[str, ...]      # 可变字体的具名实例名；非可变字体为空
+
+
+class _Hit(NamedTuple):
+    face: _Face
+    variation: str                   # 命中的名字自带的具名实例（家族名为空串）
+
+
+def _norm(s: Optional[str]) -> str:
+    """字体名归一化：NFKC、小写、去掉空白与 - _ 连字符。
+    'Source Han Serif CN' 与 'SourceHanSerifCN' 归为同一个键"""
+    s = unicodedata.normalize('NFKC', s or '').lower()
+    return re.sub(r'[\s\-_]+', '', s)
+
+
+def _norm_inst(s: str) -> str:
+    """可变实例名归一化：小写、空白折叠（保留词序）"""
+    return ' '.join(s.lower().split())
+
+
+def _read_face_info(path: str, index: int = 0) -> Optional[dict]:
+    """读一个字面的 name 表与粗体/斜体/字重（标准库 struct，不依赖 fontTools）。
+    返回 {'names': {nameID: set(str)}, 'bold', 'italic', 'weight', 'variable'}，
+    文件缺失/损坏/不是字体时返回 None"""
+    try:
+        with open(path, 'rb') as fp:
+            def rd(off, n):
+                fp.seek(off)
+                return fp.read(n)
+
+            hdr = rd(0, 12)
+            if len(hdr) < 12:
+                return None
+            if hdr[:4] == b'ttcf':          # 字体集合：第 index 个字面的表目录偏移
+                if index >= struct.unpack('>I', hdr[8:12])[0]:
+                    return None
+                base = struct.unpack('>I', rd(12 + 4 * index, 4))[0]
+                hdr = rd(base, 12)
+            else:
+                if index:
+                    return None
+                base = 0
+            if len(hdr) < 12 or hdr[:4] not in _SFNT_SIGS:
+                return None
+            num_tables = struct.unpack('>H', hdr[4:6])[0]
+            if not 0 < num_tables <= 4096:
+                return None
+            directory = rd(base + 12, 16 * num_tables)
+            if len(directory) < 16 * num_tables:
+                return None
+            tables = {}
+            for i in range(num_tables):
+                tag, _checksum, off, length = struct.unpack(
+                    '>4sIII', directory[16 * i:16 * i + 16])
+                tables[tag] = (off, length)
+            if b'name' not in tables or tables[b'name'][1] > 1 << 20:
+                return None
+            off, length = tables[b'name']
+            nb = rd(off, length)
+            if len(nb) < 6:
+                return None
+            _fmt, count, str_off = struct.unpack('>HHH', nb[:6])
+            names = {}
+            for i in range(count):
+                rec = nb[6 + 12 * i:6 + 12 * i + 12]
+                if len(rec) < 12:
+                    break
+                pid, _eid, _lid, nid, ln, so = struct.unpack('>HHHHHH', rec)
+                if nid not in (1, 2, 4, 6, 16, 17):
+                    continue
+                raw = nb[str_off + so:str_off + so + ln]
+                try:
+                    text = raw.decode('utf-16-be' if pid in (0, 3) else 'mac_roman')
+                except UnicodeDecodeError:
+                    continue
+                text = ' '.join(text.split())
+                if text:
+                    names.setdefault(nid, set()).add(text)
+            bold = italic = False
+            weight = 400
+            if b'OS/2' in tables:           # usWeightClass@4, fsSelection@62
+                os2 = rd(tables[b'OS/2'][0], 78)
+                if len(os2) >= 64:
+                    weight = struct.unpack('>H', os2[4:6])[0]
+                    fs_sel = struct.unpack('>H', os2[62:64])[0]
+                    bold = bool(fs_sel & 0x20)
+                    italic = bool(fs_sel & 0x01)
+            if b'head' in tables:           # macStyle@44：bit0 粗体, bit1 斜体
+                head = rd(tables[b'head'][0], 46)
+                if len(head) >= 46:
+                    mac = struct.unpack('>H', head[44:46])[0]
+                    bold = bold or bool(mac & 1)
+                    italic = italic or bool(mac & 2)
+            if not (bold or italic):
+                bold = any('bold' in s.lower() for s in names.get(2, ()))
+            if not 100 <= weight <= 990 or (bold and weight < 600):
+                weight = 700 if bold else 400
+            return {'names': names, 'bold': bold, 'italic': italic,
+                    'weight': weight, 'variable': b'fvar' in tables}
+    except (OSError, struct.error, ValueError) as e:
+        logger.debug(f"读取字体信息失败 {path!r}[{index}]: {e}")
+        return None
+
+
+def _face_count(path: str) -> int:
+    """字体文件里的字面数（TTC/OTC 为集合大小，普通字体为 1）；不是字体返回 0"""
+    try:
+        with open(path, 'rb') as fp:
+            hdr = fp.read(12)
+    except OSError:
+        return 0
+    if len(hdr) < 12:
+        return 0
+    if hdr[:4] == b'ttcf':
+        return min(struct.unpack('>I', hdr[8:12])[0], 64)
+    return 1 if hdr[:4] in _SFNT_SIGS else 0
+
+
+def _variation_names(path: str, index: int) -> Tuple[str, ...]:
+    """可变字体的具名实例名（Pillow/FreeType 读取，保持原样供 set_variation_by_name 用）"""
+    try:
+        from PIL import ImageFont
+        font = ImageFont.truetype(path, 16, index=index)
+        return tuple(v.decode('utf-8', 'replace') if isinstance(v, bytes) else str(v)
+                     for v in font.get_variation_names())
+    except Exception:
+        return ()
+
+
+def _design_kind(families) -> str:
+    """这组家族名若属于思源/Noto CJK 的简体写法，返回 'sans'（黑体）或 'serif'（宋体），
+    否则返回空串"""
+    for kind, bases in zip(('sans', 'serif'), _DESIGN_FAMILIES):
+        if any(_norm(s) == b + r for s in families for b in bases for r in _DESIGN_REGIONS):
+            return kind
+    return ''
+
+
+def _index_faces(items: Iterable[Tuple[str, int, dict, Tuple[str, ...]]]
+                 ) -> Tuple[Dict[str, List[_Hit]], FrozenSet[str], Dict[str, str]]:
+    """把若干字面建成索引。items: (路径, 字面序号, _read_face_info 的结果, 具名实例名)。
+    返回 (索引, 名字集合, 思源/Noto CJK 的路径->黑体/宋体)。索引 = {归一化名字: [_Hit]}：
+    家族名（nameID 1/16）下的所有字面挂在同一个键上（查的时候按粗体再挑）；
+    全名/PostScript 名（nameID 4/6）与「家族名 + 具名实例」各占一个键。"""
+    table: Dict[str, List[_Hit]] = {}
+    names: Set[str] = set()
+    design: Dict[str, str] = {}
+
+    def add(key, hit):
+        lst = table.setdefault(key, [])
+        if hit not in lst:
+            lst.append(hit)
+
+    for path, index, info, variations in items:
+        rec = info['names']
+        if not (rec.get(1) or rec.get(16)):
+            continue
+        face = _Face(path, index, info['bold'], info['italic'], info['weight'], variations)
+        families = rec.get(1, set()) | rec.get(16, set())
+        fulls = rec.get(4, set()) | rec.get(6, set())
+        names.update(s.lower() for s in families | fulls)
+        kind = _design_kind(families)
+        if kind:
+            design.setdefault(os.path.normcase(os.path.abspath(path)), kind)
+        for s in families:
+            add(_norm(s), _Hit(face, ''))
+            for v in variations:
+                add(_norm(f'{s} {v}'), _Hit(face, v))
+                names.add(f'{s} {v}'.lower())
+        for s in fulls:
+            add(_norm(s), _Hit(face, ''))
+    return table, frozenset(names), design
+
+
+def _build_system_table(files: Iterable[str]) -> Tuple[dict, FrozenSet[str], Dict[str, str]]:
+    """字体文件列表 -> (索引, 名字集合, 思源/Noto CJK 的路径->黑体/宋体)；
+    单个文件读不了只跳过它，不影响其余"""
+    items = []
+    for path in files:
+        for index in range(_face_count(path)):
+            try:
+                info = _read_face_info(path, index)
+                if info is None:
+                    continue
+                variations = _variation_names(path, index) if info['variable'] else ()
+            except Exception as e:
+                logger.debug(f"跳过无法读取的字体 {path!r}[{index}]: {e}")
+                continue
+            items.append((path, index, info, variations))
+    return _index_faces(items)
+
+
+def _system_font_dirs() -> List[str]:
+    """Windows 的两级字体目录：全用户（%WINDIR%\\Fonts）与当前用户（Win10 1809+）"""
+    dirs = [os.path.join(os.environ.get('WINDIR') or r'C:\Windows', 'Fonts')]
+    local = os.environ.get('LOCALAPPDATA')
+    if local:
+        dirs.append(os.path.join(local, 'Microsoft', 'Windows', 'Fonts'))
+    return [d for d in dirs if os.path.isdir(d)]
+
+
+def _registry_font_files() -> List[str]:
+    """注册表登记的字体文件（含装在上面两个目录之外、按完整路径登记的）。
+    全用户条目只记文件名（相对 %WINDIR%\\Fonts），当前用户条目记完整路径"""
+    out = []
+    try:
+        import winreg
+    except ImportError:
+        return out
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(
+                    hive, r'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts') as key:
+                i = 0
+                while True:
+                    try:
+                        out.append(str(winreg.EnumValue(key, i)[1]))
+                    except OSError:
+                        break
+                    i += 1
+        except OSError:
+            continue
+    return out
+
+
+def _system_font_files() -> List[str]:
+    """系统已安装字体的文件路径（去重、顺序稳定）；非 Windows 返回空"""
+    if sys.platform != 'win32':
+        return []
+    dirs = _system_font_dirs()
+    files, seen = [], set()
+
+    def add(p):
+        if not p.lower().endswith(_FONT_EXTS):
+            return
+        ap = os.path.normcase(os.path.abspath(p))
+        if ap not in seen and os.path.isfile(ap):
+            seen.add(ap)
+            files.append(ap)
+
+    for value in _registry_font_files():
+        add(value if os.path.isabs(value) or not dirs else os.path.join(dirs[0], value))
+    for d in dirs:
+        try:
+            for name in sorted(os.listdir(d)):
+                add(os.path.join(d, name))
+        except OSError:
+            continue
+    return files
+
+
+def _system_font_sig():
+    """字体目录的变更指纹（目录里增删文件时 mtime 会变）"""
+    sig = []
+    for d in _system_font_dirs():
+        try:
+            st = os.stat(d)
+            sig.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            pass
+    return tuple(sig)
+
+
+def system_font_table() -> dict:
+    """系统字体索引（惰性构建并缓存；字体目录有增删时自动重建）"""
+    global _system_table, _system_names, _system_design
+    global _system_table_sig, _system_table_checked
+    with _system_table_lock:
+        now = time.monotonic()
+        if (_system_table is None
+                or now - _system_table_checked >= _SYSTEM_TABLE_RECHECK_SEC):
+            sig = _system_font_sig()
+            if _system_table is None or sig != _system_table_sig:
+                t0 = time.perf_counter()
+                built = _build_system_table(_system_font_files())
+                _system_table, _system_names, _system_design = built
+                _system_table_sig = sig
+                logger.debug(f"系统字体索引: {len(_system_table)} 个名字, "
+                             f"耗时 {(time.perf_counter() - t0) * 1000:.0f}ms")
+            _system_table_checked = now
+        return _system_table
+
+
+def invalidate_system_fonts() -> None:
+    """清空系统字体索引缓存（新装了字体想立刻生效时调用）"""
+    global _system_table
+    with _system_table_lock:
+        _system_table = None
+
+
+def system_font_names() -> FrozenSet[str]:
+    """系统已安装字体的名字集合（小写，保留空格）"""
+    system_font_table()
+    return _system_names
+
+
+def _design_family_keys(head: str) -> List[str]:
+    """head 若是思源/Noto CJK 的某种简体写法，返回它的全部等价键（自身排最前）"""
+    for bases in _DESIGN_FAMILIES:
+        if any(head == b + r for b in bases for r in _DESIGN_REGIONS):
+            out = [head]
+            for r in _DESIGN_REGIONS:
+                for b in bases:
+                    if b + r not in out:
+                        out.append(b + r)
+            return out
+    return [head]
+
+
+def _pick_hit(hits: List[_Hit], bold: bool, weight: Optional[int],
+              italic: bool = False) -> _Hit:
+    """同一个名字下按粗体位 + 字重挑一个字面。
+    没点名要斜体就不用斜体字面（文字的斜体由引擎合成，真斜体字面留给显式写了
+    Italic/Oblique 的字体名）"""
+    plain = [h for h in hits if h.face.italic == italic]
+    pool = plain or list(hits)
+    same = [h for h in pool if h.face.bold == bold] or pool
+    target = weight if weight is not None else (700 if bold else 400)
+    return min(same, key=lambda h: (abs(h.face.weight - target), h.face.index, h.variation))
+
+
+def _heavier_instance(known: dict, weight_word: str, tail: List[str]) -> str:
+    """可变字体里比 weight_word 更重的那一档实例（由轻到重找第一个存在的）；没有返回空串。
+    常规字重的实例名常省略字重词（Bahnschrift 的 'SemiCondensed' 即常规字重的半窄体）"""
+    base = _WEIGHT_WORDS.get(weight_word, 400)
+    for value in sorted(set(_WEIGHT_WORDS.values())):
+        if value <= base:
+            continue
+        for words in ([[w] + tail for w, v in _WEIGHT_WORDS.items() if v == value]
+                      + ([tail] if value == 400 else [])):
+            hit = known.get(_norm_inst(' '.join(words)))
+            if hit:
+                return hit
+    return ''
+
+
+def _variation_for(face: _Face, variation: str, style: Tuple[str, ...], bold: bool) -> str:
+    """可变字体用哪个具名实例（非可变字体返回空串）。
+    style 是从字体名尾部拆出的字重/宽度词；bold 是文本的加粗属性：
+    - 命中家族名：按字重/宽度词拼实例名；没写字重时 regular，加粗取 Bold
+    - 命中「家族 + 实例」：加粗时字重升一档（SemiBold -> Bold，Light -> SemiLight）"""
+    if not face.variations:
+        return ''
+    known = {_norm_inst(v): v for v in face.variations}
+
+    def find(words):
+        return known.get(_norm_inst(' '.join(words)), '')
+
+    if variation:
+        words = _norm_inst(variation).split(' ')
+        hit = variation
+    else:
+        weight = [w for w in style if w in _WEIGHT_WORDS]
+        tail = [w for w in style if w not in _WEIGHT_WORDS]
+        if not weight:
+            return find((['bold'] if bold else []) + tail)
+        hit = find(weight + tail)
+        words = weight + tail
+    if not bold:
+        return hit
+    if not words or words[0] not in _WEIGHT_WORDS:
+        return find(['bold'] + words) or hit          # 只写了宽度（或什么都没写）-> Bold + 宽度
+    if words[0] in _BOLD_WORDS:
+        return find(['bold'] + words[1:]) or hit      # SemiBold -> Bold
+    return _heavier_instance(known, words[0], words[1:]) or hit   # Light -> SemiLight
+
+
+def _match_system(table: dict, typeface: str, bold: bool
+                  ) -> Optional[Tuple[str, int, str]]:
+    """在系统字体索引里按名字匹配，返回 (路径, 字面序号, 具名实例) 或 None。
+    依次尝试：整个名字 -> 去掉尾部字重/宽度词后的家族名 -> 该家族的等价写法
+    （思源 SC/CN、Noto CJK）"""
+    toks = ([t for t in re.split(r'[\s\-_]+', typeface.strip()) if t]
+            if typeface and typeface.strip() else [])
+    if not toks:
+        return None
+    attempts, style = [], []          # attempts: [(归一化家族名, 尾部样式词)]
+    while True:
+        attempts.append((_norm(' '.join(toks)), tuple(style)))
+        if len(toks) < 2 or len(style) >= 3 or toks[-1].lower() not in _STYLE_WORDS:
+            break
+        style.insert(0, toks.pop().lower())
+    for head, style_words in attempts:
+        weight_words = [w for w in style_words if w in _WEIGHT_WORDS]
+        weight = _WEIGHT_WORDS[weight_words[-1]] if weight_words else None
+        want_bold = bold or any(w in _BOLD_WORDS for w in weight_words)
+        want_italic = any(w in _ITALIC_WORDS for w in style_words)
+        for key in _design_family_keys(head):
+            hits = table.get(key)
+            if hits:
+                hit = _pick_hit(hits, want_bold, weight, want_italic)
+                return (hit.face.path, hit.face.index,
+                        _variation_for(hit.face, hit.variation, style_words, bold))
+    return None
+
+
+def _lookup_system_by_name(typeface: Optional[str], bold: bool) -> Optional[FontSpec]:
+    """按名字在系统已安装字体里找（Windows）；找不到返回 None"""
+    if not typeface or not typeface.strip():
+        return None
+    m = _match_system(system_font_table(), typeface, bold)
+    if m is None:
+        return None
+    path, index, variation = m
+    return FontSpec(path, metrics_for(path), 'system', '', index, variation)
+
+
 # ---------------- 策略 ----------------
 
 def set_policy(policy: str) -> None:
@@ -472,13 +940,15 @@ def resolve(typeface: Optional[str], bold: bool = False) -> FontSpec:
     typeface -> FontSpec；永不抛异常，无任何命中时按默认链回退并告警。
     顺序：typeface 变体在【两个来源】都查完，才轮到微软雅黑默认链
     （否则 system_first 下系统雅黑会抢先命中，捆绑字体直接命中被短路）。
+    本机层内部：系统路径表 -> 本机扩展字体目录 -> 系统已安装字体（按名字匹配）。
     系统与捆绑均未命中时尝试文档内嵌字体（PowerPoint 同语义：系统 -> 嵌入 -> 替换）。
     最终回退与原 _font_path_for 语义一致：微软雅黑(按策略查两来源) -> msyh 路径字面值。
     """
     global _uncalibrated_warned
-    # 本机字体层 = 系统注册表 + 本机扩展字体目录（静默增强）
+    # 本机字体层 = 系统路径表 + 本机扩展字体目录（静默增强）+ 系统已安装字体（按名字匹配）
     def _lookup_local(tf, b):
-        return _lookup_system(tf, b) or _lookup_wps(tf, b)
+        return (_lookup_system(tf, b) or _lookup_wps(tf, b)
+                or _lookup_system_by_name(tf, b))
 
     first, second = ((_lookup_local, _lookup_bundled)
                      if effective_policy() == 'system_first'
@@ -559,14 +1029,14 @@ def installed_system_fonts() -> Set[str]:
 def is_resolvable(typeface: str) -> bool:
     """该字体名是否有直接命中的字体文件（不含默认链回退）；供字体检查/预检用"""
     return any(l(typeface, b) is not None
-               for l in (_lookup_system, _lookup_wps, _lookup_bundled,
-                         _lookup_embedded)
+               for l in (_lookup_system, _lookup_wps, _lookup_system_by_name,
+                         _lookup_bundled, _lookup_embedded)
                for b in (True, False))
 
 
 def available_typefaces() -> Set[str]:
-    """当前环境可用的字体名集合（小写）；系统表命中文件 + 捆绑族"""
-    names = set()
+    """当前环境可用的字体名集合（小写）；系统表命中文件 + 系统已安装字体 + 捆绑族"""
+    names = set(system_font_names())
     for (tf, _b), path in SYSTEM_FONT_FILES.items():
         if os.path.exists(path):
             names.add(tf.lower())
@@ -585,17 +1055,30 @@ def available_typefaces() -> Set[str]:
 
 
 def metrics_for(path: str) -> FontMetrics:
-    """物理字体文件 -> 校准常数；捆绑思源按文件名分黑体/宋体，其余沿用雅黑值"""
+    """物理字体文件 -> 校准常数。
+    思源/Noto CJK（同一套设计，垂直度量相同）分黑体/宋体，用它们 COM 校准过的常数：
+    按文件名认（捆绑目录里的和系统里装的标准文件名），也按字体内部家族名认（系统字体
+    索引建表时记下的，文件名被改过也能认），同一份思源无论从哪边解析到排版都一样；
+    捆绑目录里的其他文件按黑体；其余字体沿用雅黑值"""
     global _uncalibrated_warned
+    base = os.path.basename(path).lower()
     d = bundled_font_dir()
-    if d and os.path.abspath(path).lower().startswith(os.path.abspath(d).lower()):
-        metrics = (METRICS_SOURCE_HAN_SERIF
-                   if os.path.basename(path).lower().startswith('sourcehanserif')
-                   else METRICS_SOURCE_HAN_SANS)
-        if not metrics.calibrated and not _uncalibrated_warned:
-            logger.warning(
-                "该字体排版常数尚未 COM 校准，暂沿用校准字体值"
-                "（多行文本行高可能有细微偏差）——用 experiments/calibrate_sourcehan.py 重校后消除")
-            _uncalibrated_warned = True
-        return metrics
-    return METRICS_MS_YAHEI
+    if base.startswith(('sourcehanserif', 'notoserifcjk')):
+        metrics = METRICS_SOURCE_HAN_SERIF
+    elif (base.startswith(('sourcehansans', 'notosanscjk'))
+          or (d and os.path.abspath(path).lower().startswith(os.path.abspath(d).lower()))):
+        metrics = METRICS_SOURCE_HAN_SANS
+    else:
+        kind = _system_design.get(os.path.normcase(os.path.abspath(path)), '')
+        if kind == 'serif':
+            metrics = METRICS_SOURCE_HAN_SERIF
+        elif kind == 'sans':
+            metrics = METRICS_SOURCE_HAN_SANS
+        else:
+            return METRICS_MS_YAHEI
+    if not metrics.calibrated and not _uncalibrated_warned:
+        logger.warning(
+            "该字体排版常数尚未 COM 校准，暂沿用校准字体值"
+            "（多行文本行高可能有细微偏差）——用 experiments/calibrate_sourcehan.py 重校后消除")
+        _uncalibrated_warned = True
+    return metrics

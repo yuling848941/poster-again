@@ -373,7 +373,8 @@ class PPTGenerator:
                 installed |= FontChecker().get_installed_fonts()
             except Exception as e:
                 logger.debug(f"系统字体检查跳过（仅用注册字体集）: {e}")
-            return list(RenderPrecheck(installed_fonts=installed)
+            return list(RenderPrecheck(installed_fonts=installed,
+                                       font_resolver=font_registry.is_resolvable)
                         .check_pptx(self.template_path))
         except Exception as e:
             logger.debug(f"模板预检失败（不影响生成）: {e}")
@@ -383,7 +384,8 @@ class PPTGenerator:
                       generate_images: bool = False, image_format: str = "PNG",
                       image_quality: float = 1.0,
                       row_indices: Optional[List[int]] = None,
-                      cancel_check: Optional[Callable[[], bool]] = None) -> BatchResult:
+                      cancel_check: Optional[Callable[[], bool]] = None,
+                      filename_prefix: str = "", filename_suffix: str = "") -> BatchResult:
         """
         批量生成PPT或图片（GUI调用接口）
 
@@ -401,6 +403,8 @@ class PPTGenerator:
                          None = 全部行
             cancel_check: 可选回调，返回 True 时在下一行开始前中止批量，
                           返回已完成部分的摘要（result.cancelled=True）
+            filename_prefix: 输出文件名前缀（可选，默认空＝与原来完全一致）
+            filename_suffix: 输出文件名后缀（可选，默认空；加在扩展名之前）
 
         Returns:
             BatchResult: success_count / failed_rows / degraded_rows / total /
@@ -497,7 +501,9 @@ class PPTGenerator:
                     logger.debug(f"获取行数据失败：{str(e)}，使用默认文件名")
                     filename = f"{index+1}_output"
 
-                # 确保文件名有效
+                # 确保文件名有效（CLI 可选文件名前后缀，默认空＝与原来完全一致）
+                if filename_prefix or filename_suffix:
+                    filename = f"{filename_prefix}{filename}{filename_suffix}"
                 filename = self._sanitize_filename(filename)
 
                 def _record_failure(stage: str, error: str):
